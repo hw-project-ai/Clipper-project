@@ -1,0 +1,5 @@
+.env
+*.har
+temp/
+output_clips/
+__pycache__/
