@@ -25,15 +25,20 @@ async def generate_clip_from_url(payload: VideoURL):
     unique_id = str(uuid.uuid4())[:8]
     temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_video.mp4")
     
-    # Konfigurasi yt-dlp yang stabil dan bersih
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
         'outtmpl': temp_video_path,
         'quiet': True,
         'no_warnings': True,
+        # Memaksa yt-dlp menggunakan downloader dengan TLS fingerprint chrome
+        'youtube_include_dash_manifest': False,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
         'extractor_args': {
             'youtube': {
-                'player_client': ['web']
+                'player_client': ['android', 'web']
             }
         }
     }

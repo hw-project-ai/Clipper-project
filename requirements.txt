@@ -6,3 +6,4 @@ python-dotenv
 google-genai
 yt-dlp
 playwright
+curl_cffi
