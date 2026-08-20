@@ -20,10 +20,9 @@ jobs_db = {}
 def download_youtube_video(job_id: str, url: str, output_path: str):
     proxy_url = os.getenv("PROXY_URL")
     
-    # Mengelabui YouTube dengan menyamar sebagai klien Android
-    # Ini sangat ampuh untuk melewati error "Sign in to confirm you're not a bot"
+    # Format fallback: cari mp4 terburuk -> jika tidak ada, cari video+audio 360p -> jika tidak ada, ambil apa saja yang terkecil
     ydl_opts = {
-        'format': 'worst[ext=mp4]/worst', 
+        'format': 'worst[ext=mp4]/worst/bestvideo[height<=360]+bestaudio/best', 
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
