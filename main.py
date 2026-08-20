@@ -19,13 +19,12 @@ jobs_db = {}
 
 def download_youtube_video(url: str, output_path: str):
     proxy_url = os.getenv("PROXY_URL")
-    # Menggunakan format resolusi terendah yang stabil agar ukuran file kecil dan ramah RAM kecil
     ydl_opts = {
         'format': 'worst[ext=mp4]/worst',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
-        'retries': 5,
+        'retries': 3,
         'nocheckcertificate': True,
         'rm_cachedir': True,
     }
@@ -42,14 +41,14 @@ def process_video_with_gemini(video_path: str):
     
     uploaded_file = None
     try:
-        # Mengunggah file dengan manajemen memori ketat
         uploaded_file = client.files.upload(file=video_path)
         prompt = (
             "Analisis video ini dan berikan daftar timestamp dalam format MM:SS - MM:SS "
             "untuk momen-momen paling menarik yang potensial dijadikan klip pendek vertikal."
         )
+        # Menggunakan model gemini-3.1-flash-lite sesuai permintaanmu yang cepat dan ringan
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.1-flash-lite',
             contents=[uploaded_file, prompt]
         )
         return response.text
@@ -79,28 +78,19 @@ def background_video_pipeline(job_id: str, video_url: str):
     video_path = os.path.join("temp", f"{job_id}_video.mp4")
     try:
         jobs_db[job_id]["status"] = "processing"
-        jobs_db[job_id]["message"] = "Mengunduh video..."
+        jobs_db[job_id]["message"] = "Mengunduh video dari YouTube..."
         download_youtube_video(video_url, video_path)
 
-        jobs_db[job_id]["message"] = "Menganalisis dengan Gemini AI..."
+        jobs_db[job_id]["message"] = "Menganalisis momen dengan Gemini 3.1 Flash Lite..."
         ai_analysis = process_video_with_gemini(video_path)
         jobs_db[job_id]["analysis"] = ai_analysis
 
-        jobs_db[job_id]["message"] = "Memotong klip..."
-        timestamp_matches = re.findall(r'(\d{2}:\d{2})\s*[-–to]+\s*(\d{2}:\d{2})', ai_analysis)
-        
-        generated_clips = []
-        if timestamp_matches:
-            # Batasi maksimal 2 klip untuk menjaga agar RAM tidak jebol saat proses FFmpeg beruntun
-            for idx, (start, end) in enumerate(timestamp_matches[:2]):
-                clip_filename = f"{job_id}_clip_{idx+1}.mp4"
-                clip_output_path = os.path.join("temp", clip_filename)
-                if crop_video_segment(video_path, start, end, clip_output_path):
-                    generated_clips.append({"id": idx + 1, "start": start, "end": end, "file": clip_filename})
-        
-        jobs_db[job_id]["clips"] = generated_clips
+        if os.path.exists(video_path):
+            os.remove(video_path)
+        gc.collect()
+
         jobs_db[job_id]["status"] = "completed"
-        jobs_db[job_id]["message"] = "Selesai!"
+        jobs_db[job_id]["message"] = "Analisis selesai dengan sukses!"
     except Exception as e:
         jobs_db[job_id]["status"] = "failed"
         jobs_db[job_id]["message"] = str(e)
@@ -111,16 +101,16 @@ def background_video_pipeline(job_id: str, video_url: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Running"}
+    return {"status": "Clipper Project Backend is running smoothly."}
 
 @app.post("/api/v1/generate-clip-url")
 def generate_clip_url(payload: dict, bg_tasks: BackgroundTasks):
     video_url = payload.get("url")
     if not video_url:
-        raise HTTPException(status_code=400, detail="URL kosong.")
+        raise HTTPException(status_code=400, detail="URL YouTube tidak boleh kosong.")
     
     job_id = uuid.uuid4().hex[:8]
-    jobs_db[job_id] = {"status": "queued", "message": "Antrean...", "clips": []}
+    jobs_db[job_id] = {"status": "queued", "message": "Pekerjaan dimasukkan ke dalam antrean...", "clips": [], "analysis": None}
     bg_tasks.add_task(background_video_pipeline, job_id, video_url)
     return {"status": "success", "job_id": job_id}
 
@@ -128,7 +118,7 @@ def generate_clip_url(payload: dict, bg_tasks: BackgroundTasks):
 def get_job_status(job_id: str):
     job = jobs_db.get(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Tidak ditemukan.")
+        raise HTTPException(status_code=404, detail="Job ID tidak ditemukan.")
     return job
 
 if __name__ == "__main__":
