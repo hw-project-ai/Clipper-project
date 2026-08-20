@@ -3,19 +3,17 @@ import time
 import uuid
 import uvicorn
 from fastapi import FastAPI, HTTPException
-import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, InternalServerError
+from google import genai
+from google.genai import errors
 import yt_dlp
 
 app = FastAPI(title="Opus Clip Clone API")
 
-# Konfigurasi API Key Gemini
-# Memastikan string dibersihkan dari spasi atau karakter tersembunyi
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY.strip())
+# Inisialisasi klien Gemini menggunakan pustaka resmi terbaru (google.genai)
+# Pastikan GEMINI_API_KEY sudah diset dengan benar di Render
+api_key = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key.strip()) if api_key else None
 
-# Pastikan direktori temp ada
 os.makedirs("temp", exist_ok=True)
 
 def download_youtube_video(url: str, output_path: str):
@@ -56,9 +54,12 @@ def download_youtube_video(url: str, output_path: str):
 
 def process_video_with_gemini(video_path: str):
     """
-    Mengirim video ke Gemini menggunakan model gemini-3.1-flash-lite 
-    dengan mekanisme Exponential Backoff untuk menghindari error 503.
+    Mengunggah dan memproses video ke Gemini menggunakan klien baru (google.genai)
+    dengan model gemini-3.1-flash-lite serta penanganan error yang tangguh.
     """
+    if not client:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY belum dikonfigurasi di server.")
+
     max_retries = 4
     base_delay = 2
 
@@ -66,42 +67,43 @@ def process_video_with_gemini(video_path: str):
         uploaded_file = None
         try:
             print(f"Mengunggah file ke Gemini (Percobaan {attempt + 1}/{max_retries})...")
-            uploaded_file = genai.upload_file(path=video_path)
             
-            # Menggunakan model gemini-3.1-flash-lite pilihanmu
-            model = genai.GenerativeModel('gemini-3.1-flash-lite')
+            # Menggunakan API file upload dari pustaka google.genai
+            uploaded_file = client.files.upload(file=video_path)
+            
             prompt = "Analisis video ini dan berikan daftar timestamp (waktu mulai dan selesai) untuk momen-momen paling menarik yang potensial dijadikan klip pendek vertikal beserta alasannya."
             
-            response = model.generate_content([uploaded_file, prompt])
+            # Memanggil model gemini-3.1-flash-lite
+            response = client.models.generate_content(
+                model='gemini-3.1-flash-lite',
+                contents=[uploaded_file, prompt]
+            )
             result_text = response.text
             
+            # Hapus file dari server Gemini setelah selesai
             if uploaded_file:
-                genai.delete_file(uploaded_file.name)
+                client.files.delete(name=uploaded_file.name)
                 print("File media dibersihkan dari server Gemini.")
                 
             return result_text
 
-        except (ResourceExhausted, ServiceUnavailable, InternalServerError) as e:
-            print(f"Server Gemini sibuk (Percobaan {attempt + 1}): {e}")
+        except Exception as e:
+            print(f"Kendala pada Gemini (Percobaan {attempt + 1}): {e}")
             if uploaded_file:
                 try:
-                    genai.delete_file(uploaded_file.name)
+                    client.files.delete(name=uploaded_file.name)
                 except Exception:
                     pass
             
+            error_msg = str(e)
+            if "API_KEY_INVALID" in error_msg or "400" in error_msg:
+                raise HTTPException(status_code=400, detail=f"API Key tidak valid: {error_msg}")
+
             if attempt < max_retries - 1:
                 sleep_time = base_delay * (2 ** attempt)
                 time.sleep(sleep_time)
             else:
-                raise HTTPException(status_code=503, detail=f"Gagal memproses video dengan Gemini API: {str(e)}")
-                
-        except Exception as e:
-            if uploaded_file:
-                try:
-                    genai.delete_file(uploaded_file.name)
-                except Exception:
-                    pass
-            raise HTTPException(status_code=500, detail=f"Error internal Gemini: {str(e)}")
+                raise HTTPException(status_code=503, detail=f"Gagal memproses video dengan Gemini API setelah beberapa percobaan: {error_msg}")
 
 @app.get("/")
 def read_root():
@@ -120,7 +122,7 @@ def generate_clip_url(payload: dict):
         # 1. Unduh Video menggunakan yt-dlp & PROXY_URL
         download_youtube_video(video_url, video_path)
 
-        # 2. Proses dengan Gemini (gemini-3.1-flash-lite)
+        # 2. Proses dengan Gemini menggunakan klien baru
         ai_analysis = process_video_with_gemini(video_path)
 
         # 3. Bersihkan file lokal setelah selesai
