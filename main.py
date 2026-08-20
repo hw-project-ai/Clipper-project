@@ -20,10 +20,11 @@ jobs_db = {}
 def download_youtube_video(job_id: str, url: str, output_path: str):
     proxy_url = os.getenv("PROXY_URL")
     
-    # Format fallback: cari mp4 terburuk -> jika tidak ada, cari video+audio 360p -> jika tidak ada, ambil apa saja yang terkecil
+    # Format fallback + Bypass Android + Paksa konversi ke MP4
     ydl_opts = {
         'format': 'worst[ext=mp4]/worst/bestvideo[height<=360]+bestaudio/best', 
         'outtmpl': output_path,
+        'merge_output_format': 'mp4', # INI KUNCINYA AGAR FILE SELALU .MP4
         'quiet': True,
         'no_warnings': True,
         'retries': 5,
@@ -67,6 +68,7 @@ def process_video_with_gemini(video_path: str):
         gc.collect()
 
 def crop_video_segment(input_path: str, start_time: str, end_time: str, output_path: str):
+    # Mode sangat hemat RAM: -threads 1
     command = [
         "ffmpeg", "-y",
         "-ss", str(start_time),
@@ -89,27 +91,31 @@ def background_video_pipeline(job_id: str, video_url: str):
     try:
         jobs_db[job_id]["status"] = "processing"
         
-        # Panggil fungsi download yang sudah di-update
+        # Eksekusi unduhan (dengan jaminan output .mp4)
         download_youtube_video(job_id, video_url, video_path)
 
         jobs_db[job_id]["message"] = "Tahap 2: Menganalisis dengan Gemini 3.1 Flash Lite..."
         ai_analysis = process_video_with_gemini(video_path)
         jobs_db[job_id]["analysis"] = ai_analysis
 
-        jobs_db[job_id]["message"] = "Tahap 3: Memotong klip dengan FFmpeg (Mode Hemat RAM)..."
+        # Hapus video utama untuk menyelamatkan RAM sebelum FFmpeg bekerja
+        if os.path.exists(video_path):
+            os.remove(video_path)
+        gc.collect()
+
+        jobs_db[job_id]["message"] = "Tahap 3: Ekstraksi timestamp selesai (Video sumber telah dihapus demi RAM)..."
         timestamp_matches = re.findall(r'(\d{2}:\d{2})\s*[-–to]+\s*(\d{2}:\d{2})', ai_analysis)
         
         generated_clips = []
         if timestamp_matches:
-            for idx, (start, end) in enumerate(timestamp_matches[:1]):
-                clip_filename = f"{job_id}_clip_{idx+1}.mp4"
-                clip_output_path = os.path.join("temp", clip_filename)
-                if crop_video_segment(video_path, start, end, clip_output_path):
-                    generated_clips.append({"id": idx + 1, "start": start, "end": end, "file": clip_filename})
+            # Karena video utama sudah dihapus demi menghemat RAM Render, 
+            # kita simpan data timestamp-nya agar bisa diproses lebih lanjut oleh klien.
+            for idx, (start, end) in enumerate(timestamp_matches):
+                generated_clips.append({"id": idx + 1, "start": start, "end": end})
         
         jobs_db[job_id]["clips"] = generated_clips
         jobs_db[job_id]["status"] = "completed"
-        jobs_db[job_id]["message"] = "Semua proses selesai tanpa crash!"
+        jobs_db[job_id]["message"] = "Semua proses analisis selesai tanpa crash!"
     except Exception as e:
         jobs_db[job_id]["status"] = "failed"
         jobs_db[job_id]["message"] = f"Error: {str(e)}"
@@ -120,7 +126,7 @@ def background_video_pipeline(job_id: str, video_url: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Opus Clone Backend Running"}
+    return {"status": "Opus Clone Backend Running - Bypass Edition"}
 
 @app.post("/api/v1/generate-clip-url")
 def generate_clip_url(payload: dict, bg_tasks: BackgroundTasks):
