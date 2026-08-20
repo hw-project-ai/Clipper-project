@@ -25,6 +25,7 @@ async def generate_clip_from_url(payload: VideoURL):
     unique_id = str(uuid.uuid4())[:8]
     temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_video.mp4")
     
+    # Konfigurasi yt-dlp yang stabil dan bersih
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
         'outtmpl': temp_video_path,
@@ -32,12 +33,9 @@ async def generate_clip_from_url(payload: VideoURL):
         'no_warnings': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android'],
-                'skip': ['dash', 'hls']
+                'player_client': ['web']
             }
-        },
-        'geo_bypass': True,
-        'socket_timeout': 30
+        }
     }
     
     try:
