@@ -25,19 +25,20 @@ async def generate_clip_from_url(payload: VideoURL):
     unique_id = str(uuid.uuid4())[:8]
     temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_video.mp4")
     
-    # Konfigurasi yt-dlp tingkat lanjut untuk lingkungan produksi komersial
+    # Konfigurasi yt-dlp tingkat lanjut dengan trik pemutar embedded & ios untuk produksi komersial
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': temp_video_path,
         'quiet': True,
         'no_warnings': True,
-        # Memaksa yt-dlp berputar melalui berbagai client API resmi YouTube secara otomatis
+        # Menggunakan klien ios dan tv untuk menghindari tantangan bot berbasis IP server cloud
         'extractor_args': {
             'youtube': {
-                'player_client': ['web', 'mweb', 'android']
+                'player_client': ['ios', 'tv', 'web']
             }
         },
         'socket_timeout': 30,
+        'geo_bypass': True,
     }
     
     try:
