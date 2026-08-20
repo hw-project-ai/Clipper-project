@@ -30,17 +30,14 @@ async def generate_clip_from_url(payload: VideoURL):
         'outtmpl': temp_video_path,
         'quiet': True,
         'no_warnings': True,
-        # Memaksa yt-dlp menggunakan downloader dengan TLS fingerprint chrome
-        'youtube_include_dash_manifest': False,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-        },
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web']
+                'player_client': ['android'],
+                'skip': ['dash', 'hls']
             }
-        }
+        },
+        'geo_bypass': True,
+        'socket_timeout': 30
     }
     
     try:
