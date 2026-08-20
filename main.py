@@ -17,19 +17,27 @@ client = genai.Client(api_key=api_key.strip()) if api_key else None
 os.makedirs("temp", exist_ok=True)
 jobs_db = {}
 
-def download_youtube_video(url: str, output_path: str):
+def download_youtube_video(job_id: str, url: str, output_path: str):
     proxy_url = os.getenv("PROXY_URL")
+    
+    # Mengelabui YouTube dengan menyamar sebagai klien Android
+    # Ini sangat ampuh untuk melewati error "Sign in to confirm you're not a bot"
     ydl_opts = {
         'format': 'worst[ext=mp4]/worst', 
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
-        'retries': 3,
+        'retries': 5,
         'nocheckcertificate': True,
         'rm_cachedir': True,
+        'extractor_args': {'youtube': ['client=android', 'player_client=android']} 
     }
+    
     if proxy_url:
         ydl_opts['proxy'] = proxy_url.strip()
+        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video (MENGGUNAKAN PROXY & Bypass Android)..."
+    else:
+        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video (TANPA PROXY - Bypass Android)..."
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -60,7 +68,6 @@ def process_video_with_gemini(video_path: str):
         gc.collect()
 
 def crop_video_segment(input_path: str, start_time: str, end_time: str, output_path: str):
-    # Kunci penghematan RAM: -threads 1 membatasi CPU/RAM secara ketat
     command = [
         "ffmpeg", "-y",
         "-ss", str(start_time),
@@ -82,8 +89,9 @@ def background_video_pipeline(job_id: str, video_url: str):
     video_path = os.path.join("temp", f"{job_id}_video.mp4")
     try:
         jobs_db[job_id]["status"] = "processing"
-        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video (Kualitas Terendah)..."
-        download_youtube_video(video_url, video_path)
+        
+        # Panggil fungsi download yang sudah di-update
+        download_youtube_video(job_id, video_url, video_path)
 
         jobs_db[job_id]["message"] = "Tahap 2: Menganalisis dengan Gemini 3.1 Flash Lite..."
         ai_analysis = process_video_with_gemini(video_path)
@@ -94,7 +102,6 @@ def background_video_pipeline(job_id: str, video_url: str):
         
         generated_clips = []
         if timestamp_matches:
-            # Hanya proses 1 klip pertama dulu agar tidak meledakkan RAM berulang kali
             for idx, (start, end) in enumerate(timestamp_matches[:1]):
                 clip_filename = f"{job_id}_clip_{idx+1}.mp4"
                 clip_output_path = os.path.join("temp", clip_filename)
