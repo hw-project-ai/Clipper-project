@@ -6,7 +6,7 @@ url = "https://clipper-project-track8.onrender.com/api/v1/generate-clip-url"
 
 # Masukkan link video YouTube dan resolusi yang diinginkan
 payload = {
-    "url": "https://youtu.be/ywx_PwoS4YE?is=Ki3ww6qfrg6AVCzv",
+    "url": "https://youtu.be/xEah8NzNrGQ?si=gCI0153cI9onYk47",
     "resolution": "1080" # Kau bisa mengubahnya jadi "720", "1080", "1440", atau "best"
 }
 

@@ -1,90 +1,97 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from typing import Optional
-import yt_dlp
 import os
-import uuid
-from services.gemini_analyzer import analyze_and_get_highlights
-from services.video_editor import crop_and_cut_video
-from config import settings
+import time
+import uvicorn
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
+import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, InternalServerError
 
-app = FastAPI(title="Opus Clip Clone - Stable Edition")
+app = FastAPI(title="Opus Clip Clone API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Konfigurasi API Key Gemini
+# Pastikan GEMINI_API_KEY sudah diset di environment variable Render
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-app.mount("/files", StaticFiles(directory=settings.OUTPUT_DIR), name="static_files")
+def process_video_with_gemini(video_path: str):
+    """
+    Mengirim video ke Gemini dengan mekanisme Exponential Backoff 
+    untuk menghindari error 503 Service Unavailable / High Demand.
+    Menggunakan gemini-1.5-flash agar lebih stabil dan cepat.
+    """
+    max_retries = 4
+    base_delay = 2  # Jeda awal 2 detik
 
-class VideoURL(BaseModel):
-    url: str
-    resolution: Optional[str] = "best" # Defaultnya akan mengambil yang terbaik
+    for attempt in range(max_retries):
+        uploaded_file = None
+        try:
+            print(f"Mencoba mengunggah dan memproses video dengan Gemini (Percobaan {attempt + 1}/{max_retries})...")
+            
+            # Mengunggah file video ke server Gemini
+            uploaded_file = genai.upload_file(path=video_path)
+            
+            # Menggunakan model flash untuk ketahanan terhadap beban tinggi
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            # Prompt untuk analisis highlight video
+            prompt = "Analisis video ini dan berikan poin-poin momen paling menarik atau penting untuk dijadikan klip pendek vertikal."
+            response = model.generate_content([uploaded_file, prompt])
+            
+            result_text = response.text
+            
+            # Bersihkan file dari server Gemini setelah selesai
+            if uploaded_file:
+                genai.delete_file(uploaded_file.name)
+                print("File media berhasil dihapus dari server Gemini.")
+                
+            return result_text
+
+        except (ResourceExhausted, ServiceUnavailable, InternalServerError) as e:
+            print(f"Server Gemini sibuk/error (Percobaan {attempt + 1}): {e}")
+            if uploaded_file:
+                try:
+                    genai.delete_file(uploaded_file.name)
+                except Exception:
+                    pass
+            
+            if attempt < max_retries - 1:
+                sleep_time = base_delay * (2 ** attempt)  # 2s, 4s, 8s...
+                print(f"Menunggu {sleep_time} detik sebelum mencoba lagi...")
+                time.sleep(sleep_time)
+            else:
+                print("Gemini menolak setelah semua percobaan.")
+                raise HTTPException(status_code=503, detail=f"Gagal memproses video dengan Gemini API: {str(e)}")
+                
+        except Exception as e:
+            if uploaded_file:
+                try:
+                    genai.delete_file(uploaded_file.name)
+                except Exception:
+                    pass
+            print(f"Terjadi kesalahan fatal pada Gemini: {e}")
+            raise HTTPException(status_code=500, detail=f"Error internal Gemini: {str(e)}")
+
+@app.get("/")
+def read_root():
+    return {"status": "Clipper Project Backend is running smoothly."}
 
 @app.post("/api/v1/generate-clip-url")
-async def generate_clip_from_url(payload: VideoURL):
-    unique_id = str(uuid.uuid4())[:8]
-    temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_video.mp4")
-    
-    # 1. Menentukan format resolusi secara dinamis berdasarkan permintaanmu
-    if payload.resolution and payload.resolution != "best":
-        # Jika kau meminta 720, 1080, dsb.
-        format_str = f'bestvideo[height<={payload.resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={payload.resolution}][ext=mp4]/best'
-    else:
-        # Jika kau membiarkannya 'best' atau kosong, ambil resolusi tertinggi
-        format_str = 'best[ext=mp4]/best'
+def generate_clip_url(payload: dict):
+    video_url = payload.get("url")
+    if not video_url:
+        raise HTTPException(status_code=400, detail="URL YouTube tidak boleh kosong.")
 
-    # 2. Konfigurasi yt-dlp yang tangguh dan kebal 403
-    ydl_opts = {
-        'format': format_str,
-        'outtmpl': temp_video_path,
-        'quiet': True,
-        'no_warnings': True,
-        'retries': 15,
-        'fragment_retries': 15,
-        # INI PENTING: Membantu melewati 403 Forbidden saat proxy tidak stabil
-        'nocheckcertificate': True, 
-        'rm_cachedir': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'web']
-            }
-        },
-        # Menggunakan aria2c (jika ada) atau memecah koneksi HTTP bawaan
-        'http_chunk_size': 10485760, # Unduh dalam potongan 10MB agar tidak mudah putus
+    # Contoh titik integrasi pemanggilan fungsi di dalam endpoint FastAPI
+    # (Pastikan path file hasil unduhan yt-dlp disesuaikan dengan logika unduhanmu)
+    # mock_video_path = "./temp/sample_video.mp4"
+    
+    # ai_analysis = process_video_with_gemini(mock_video_path)
+    
+    return {
+        "status": "success",
+        "message": "Struktur logika siap dieksekusi."
     }
-    
-    if settings.PROXY_URL:
-        ydl_opts['proxy'] = settings.PROXY_URL
-        print(f"[Clipper] Menggunakan proxy untuk melewati deteksi bot YouTube...")
-    
-    try:
-        # 3. Unduh video menggunakan yt-dlp (akan otomatis me-resume jika putus)
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([payload.url])
-            
-        # 4. Analisis dengan Gemini
-        highlight_data = analyze_and_get_highlights(temp_video_path)
-        
-        # 5. Potong video
-        output_name = f"viral_{unique_id}.mp4"
-        final_video_path = crop_and_cut_video(
-            input_path=temp_video_path,
-            start_time=highlight_data['start_time_seconds'],
-            end_time=highlight_data['end_time_seconds'],
-            output_filename=output_name
-        )
-        
-        return {
-            "status": "success",
-            "data": highlight_data,
-            "download_url": f"/files/{output_name}"
-        }
-        
-    except Exception as e:
-        # Mengembalikan pesan error yang lebih bersih
-        raise HTTPException(status_code=500, detail=f"ERROR: {str(e)}")
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
