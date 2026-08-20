@@ -1,39 +1,44 @@
 import requests
+import time
 import json
 
-# URL endpoint server Render milikmu
-url = "https://clipper-project-track8.onrender.com/api/v1/generate-clip-url"
+# URL endpoint server Render
+BASE_URL = "https://clipper-project-track8.onrender.com"
+GENERATE_URL = f"{BASE_URL}/api/v1/generate-clip-url"
 
-# Masukkan link video YouTube dan resolusi yang diinginkan
 payload = {
-    "url": "https://youtu.be/xEah8NzNrGQ?si=gCI0153cI9onYk47",
-    "resolution": "1080" # Kau bisa mengubahnya jadi "720", "1080", "1440", atau "best"
+    "url": "https://youtu.be/xEah8NzNrGQ?si=gCI0153cI9onYk47"
 }
 
-print("Mengirim URL YouTube ke server Render...")
-print("AI sedang merayapi link, mengunduh audio/video, dan mencari highlight...")
+print("Mengirim URL ke server, memulai proses latar belakang...")
+response = requests.post(GENERATE_URL, json=payload)
 
-try:
-    # Mengirim request POST dengan format JSON dan timeout yang memadai untuk proses video
-    response = requests.post(url, json=payload, timeout=300)
-
-    print(f"\nStatus Code: {response.status_code}")
+if response.status_code == 200:
+    data = response.json()
+    job_id = data["job_id"]
+    print(f"Pekerjaan dimulai! Job ID: {job_id}")
     
-    if response.status_code == 200:
-        res_data = response.json()
-        print("Berhasil! Respons JSON dari Server:")
-        print(json.dumps(res_data, indent=2))
+    # Polling status secara berkala
+    while True:
+        print("Memeriksa status...")
+        try:
+            status_res = requests.get(f"{BASE_URL}/api/v1/status/{job_id}")
+            status_data = status_res.json()
+            
+            print(f"Status: {status_data['status']} - {status_data['message']}")
+            
+            if status_data["status"] == "completed":
+                print("\nProses selesai! Berikut hasilnya:")
+                print(json.dumps(status_data, indent=2))
+                break
+            elif status_data["status"] == "failed":
+                print(f"\nProses gagal: {status_data['message']}")
+                break
+        except Exception as e:
+            print(f"Gagal memeriksa status: {e}")
         
-        # Ekstraksi informasi penting jika tersedia
-        if "download_url" in res_data:
-            print(f"\nLink Unduhan Video Klip: https://clipper-project-track8.onrender.com{res_data['download_url']}")
-    else:
-        print("Server merespons dengan error:")
-        print(response.text)
-
-except requests.exceptions.Timeout:
-    print("Waktu habis (Timeout): Proses unduh dan analisis YouTube memakan waktu terlalu lama di server.")
-except requests.exceptions.ConnectionError:
-    print("Kesalahan Koneksi: Gagal terhubung ke server Render. Pastikan server aktif dan URL benar.")
-except Exception as e:
-    print(f"Terjadi kesalahan yang tidak terduga: {e}")
+        # Tunggu 5 detik sebelum mencoba lagi agar tidak membebani server
+        time.sleep(5) 
+else:
+    print(f"Gagal mengirim request: {response.status_code}")
+    print(response.text)
