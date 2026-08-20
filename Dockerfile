@@ -17,6 +17,9 @@ COPY requirements.txt .
 # Menginstal semua pustaka Python (FastAPI, dll)
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install browser binaries untuk playwright
+RUN playwright install --with-deps chromium
+
 # Meng-copy seluruh sisa kodemu ke dalam server
 COPY . .
 
