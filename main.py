@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import yt_dlp
 import os
@@ -10,12 +11,17 @@ from config import settings
 
 app = FastAPI(title="Opus Clip Clone - Stable Edition")
 
+# Mengizinkan akses dari domain manapun (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# INI KUNCINYA: Mengekspos folder output_clips agar bisa diakses secara publik
+# melalui endpoint '/files'. Ini memungkinkan clipper-cobalt.js mengunduh video.
+app.mount("/files", StaticFiles(directory=settings.OUTPUT_DIR), name="static_files")
 
 class VideoURL(BaseModel):
     url: str
