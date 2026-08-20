@@ -30,7 +30,10 @@ async def generate_clip_from_url(payload: VideoURL):
         'outtmpl': temp_video_path,
         'quiet': True,
         'no_warnings': True,
-        'js_runtimes': {'node': True}, # Menggunakan Node.js untuk bypass tantangan JS YouTube
+        # Format kamus yang benar untuk js_runtimes
+        'js_runtimes': {
+            'node': {}
+        },
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'web']
