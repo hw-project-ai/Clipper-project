@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import shutil
 import os
 import uuid
@@ -8,9 +9,18 @@ from config import settings
 
 app = FastAPI(title="Opus Clip Clone - Gemini Edition")
 
+# --- TAMBAHKAN KODE INI UNTUK MENGATASI CORS ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Mengizinkan semua akses dari frontend manapun
+    allow_credentials=True,
+    allow_methods=["*"],  # Mengizinkan semua method (POST, GET, dll)
+    allow_headers=["*"],  # Mengizinkan semua header
+)
+# ----------------------------------------------
+
 @app.post("/api/v1/generate-clip")
 async def generate_clip(video: UploadFile = File(...)):
-    # Buat nama file unik untuk mencegah bentrokan jika diakses bersamaan
     unique_id = str(uuid.uuid4())[:8]
     temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_{video.filename}")
     
