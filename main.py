@@ -6,6 +6,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from google import genai
 import yt_dlp
+import re
 
 app = FastAPI(title="Opus Clip Clone API")
 
@@ -67,19 +68,20 @@ def process_video_with_gemini(video_path: str):
         try:
             print(f"Mengunggah file ke Gemini (Percobaan {attempt + 1}/{max_retries})...")
             
-            # Menggunakan API file upload dari pustaka google.genai
             uploaded_file = client.files.upload(file=video_path)
             
-            prompt = "Analisis video ini dan berikan daftar timestamp (waktu mulai dan selesai) untuk momen-momen paling menarik yang potensial dijadikan klip pendek vertikal beserta alasannya."
+            prompt = (
+                "Analisis video ini dan berikan daftar timestamp dalam format MM:SS - MM:SS "
+                "untuk momen-momen paling menarik yang potensial dijadikan klip pendek vertikal "
+                "beserta judul dan alasannya."
+            )
             
-            # Memanggil model gemini-3.1-flash-lite
             response = client.models.generate_content(
                 model='gemini-3.1-flash-lite',
                 contents=[uploaded_file, prompt]
             )
             result_text = response.text
             
-            # Hapus file dari server Gemini setelah selesai
             if uploaded_file:
                 client.files.delete(name=uploaded_file.name)
                 print("File media dibersihkan dari server Gemini.")
@@ -94,15 +96,10 @@ def process_video_with_gemini(video_path: str):
                 except Exception:
                     pass
             
-            error_msg = str(e)
-            if "API_KEY_INVALID" in error_msg or "400" in error_msg:
-                raise HTTPException(status_code=400, detail=f"API Key tidak valid: {error_msg}")
-
             if attempt < max_retries - 1:
-                sleep_time = base_delay * (2 ** attempt)
-                time.sleep(sleep_time)
+                time.sleep(base_delay * (2 ** attempt))
             else:
-                raise HTTPException(status_code=503, detail=f"Gagal memproses video dengan Gemini API setelah beberapa percobaan: {error_msg}")
+                raise HTTPException(status_code=503, detail=f"Gagal memproses video dengan Gemini API: {str(e)}")
 
 def crop_video_segment(input_path: str, start_time: str, end_time: str, output_path: str):
     """
@@ -127,12 +124,11 @@ def crop_video_segment(input_path: str, start_time: str, end_time: str, output_p
         
         if result.returncode != 0:
             print(f"Error FFmpeg: {result.stderr}")
-            raise HTTPException(status_code=500, detail="Gagal memproses pemotongan video dengan FFmpeg.")
-            
+            return False
         return True
     except Exception as e:
         print(f"Terjadi kesalahan saat menjalankan FFmpeg: {e}")
-        raise HTTPException(status_code=500, detail=f"Error internal FFmpeg: {str(e)}")
+        return False
 
 @app.get("/")
 def read_root():
@@ -146,39 +142,50 @@ def generate_clip_url(payload: dict):
 
     file_id = uuid.uuid4().hex[:8]
     video_path = os.path.join("temp", f"{file_id}_video.mp4")
-    clipped_output_path = os.path.join("temp", f"{file_id}_clip.mp4")
 
     try:
-        # 1. Unduh Video menggunakan yt-dlp & PROXY_URL
+        # 1. Unduh Video
         download_youtube_video(video_url, video_path)
 
-        # 2. Proses dengan Gemini menggunakan klien baru
+        # 2. Proses Analisis dengan Gemini
         ai_analysis = process_video_with_gemini(video_path)
 
-        # 3. Contoh pemotongan segmen (bisa disesuaikan dengan parsing timestamp dari Gemini)
-        # Untuk saat ini kita jalankan fungsi pemotongan dengan sampel waktu
-        # crop_video_segment(video_path, "00:00", "00:10", clipped_output_path)
+        # 3. Ekstraksi timestamp otomatis dari teks Gemini (mencari pola MM:SS - MM:SS)
+        timestamp_matches = re.findall(r'(\d{2}:\d{2})\s*[-–to]+\s*(\d{2}:\d{2})', ai_analysis)
+        
+        generated_clips = []
+        if timestamp_matches:
+            # Ambil hingga 3 klip pertama untuk dipotong secara otomatis sebagai contoh
+            for idx, (start, end) in enumerate(timestamp_matches[:3]):
+                clip_filename = f"{file_id}_clip_{idx+1}.mp4"
+                clip_output_path = os.path.join("temp", clip_filename)
+                
+                success = crop_video_segment(video_path, start, end, clip_output_path)
+                if success:
+                    generated_clips.append({
+                        "id": idx + 1,
+                        "start": start,
+                        "end": end,
+                        "file": clip_filename
+                    })
 
-        # 4. Bersihkan file video utama setelah selesai
+        # 4. Bersihkan video mentah utama setelah selesai diproses
         if os.path.exists(video_path):
             os.remove(video_path)
 
         return {
             "status": "success",
-            "analysis": ai_analysis
+            "analysis": ai_analysis,
+            "clips": generated_clips
         }
 
     except HTTPException as he:
         if os.path.exists(video_path):
             os.remove(video_path)
-        if os.path.exists(clipped_output_path):
-            os.remove(clipped_output_path)
         raise he
     except Exception as e:
         if os.path.exists(video_path):
             os.remove(video_path)
-        if os.path.exists(clipped_output_path):
-            os.remove(clipped_output_path)
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
