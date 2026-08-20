@@ -38,20 +38,24 @@ async def generate_clip_from_url(payload: VideoURL):
         # Jika kau membiarkannya 'best' atau kosong, ambil resolusi tertinggi
         format_str = 'best[ext=mp4]/best'
 
-    # 2. Konfigurasi yt-dlp yang tangguh
+    # 2. Konfigurasi yt-dlp yang tangguh dan kebal 403
     ydl_opts = {
         'format': format_str,
         'outtmpl': temp_video_path,
         'quiet': True,
         'no_warnings': True,
-        # INI PENTING: Memaksa yt-dlp mengulang unduhan 15 kali jika proksi Decodo putus (SSL failure)
         'retries': 15,
         'fragment_retries': 15,
+        # INI PENTING: Membantu melewati 403 Forbidden saat proxy tidak stabil
+        'nocheckcertificate': True, 
+        'rm_cachedir': True,
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'ios', 'web']
             }
-        }
+        },
+        # Menggunakan aria2c (jika ada) atau memecah koneksi HTTP bawaan
+        'http_chunk_size': 10485760, # Unduh dalam potongan 10MB agar tidak mudah putus
     }
     
     if settings.PROXY_URL:
