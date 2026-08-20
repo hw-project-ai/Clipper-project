@@ -4,13 +4,11 @@ import uuid
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from google import genai
-from google.genai import errors
 import yt_dlp
 
 app = FastAPI(title="Opus Clip Clone API")
 
-# Inisialisasi klien Gemini menggunakan pustaka resmi terbaru (google.genai)
-# Pastikan GEMINI_API_KEY sudah diset dengan benar di Render
+# Memastikan API Key bersih dari spasi tersembunyi
 api_key = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key.strip()) if api_key else None
 
