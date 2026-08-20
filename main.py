@@ -10,19 +10,20 @@ import yt_dlp
 app = FastAPI(title="Opus Clip Clone API")
 
 # Konfigurasi API Key Gemini
+# Memastikan string dibersihkan dari spasi atau karakter tersembunyi
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    genai.configure(api_key=GEMINI_API_KEY.strip())
 
 # Pastikan direktori temp ada
 os.makedirs("temp", exist_ok=True)
 
 def download_youtube_video(url: str, output_path: str):
     """
-    Mengunduh video YouTube menggunakan yt-dlp dengan proksi (PROXY_URL)
+    Mengunduh video YouTube menggunakan yt-dlp dengan PROXY_URL
     untuk melewati pembatasan bot dan error 403.
     """
-    proxy_url = os.getenv("PROXY_URL") # Menggunakan PROXY_URL sesuai setelan Render-mu
+    proxy_url = os.getenv("PROXY_URL")
     
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -42,7 +43,7 @@ def download_youtube_video(url: str, output_path: str):
     }
 
     if proxy_url:
-        ydl_opts['proxy'] = proxy_url
+        ydl_opts['proxy'] = proxy_url.strip()
         print(f"[Clipper] Menggunakan PROXY_URL untuk mengunduh video...")
 
     try:
