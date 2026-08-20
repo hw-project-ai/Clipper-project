@@ -1,35 +1,46 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware  # <-- Tambahkan ini
-import shutil
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import yt_dlp
 import os
 import uuid
 from services.gemini_analyzer import analyze_and_get_highlights
 from services.video_editor import crop_and_cut_video
 from config import settings
 
-app = FastAPI(title="Opus Clip Clone - Gemini Edition")
+app = FastAPI(title="Opus Clip Clone - YouTube Edition")
 
-# --- TAMBAHKAN BLOK INI ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Mengizinkan akses dari frontend mana pun
-    allow_credentials=True,
-    allow_methods=["*"],  # Mengizinkan semua method (POST, GET, dll)
-    allow_headers=["*"],  # Mengizinkan semua header
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-# --------------------------
 
-@app.post("/api/v1/generate-clip")
-async def generate_clip(video: UploadFile = File(...)):
+class VideoURL(BaseModel):
+    url: str
+
+@app.post("/api/v1/generate-clip-url")
+async def generate_clip_from_url(payload: VideoURL):
     unique_id = str(uuid.uuid4())[:8]
-    temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_{video.filename}")
+    temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_video.mp4")
+    
+    # Konfigurasi yt-dlp untuk mengunduh video
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': temp_video_path,
+        'quiet': True,
+    }
     
     try:
-        with open(temp_video_path, "wb") as buffer:
-            shutil.copyfileobj(video.file, buffer)
+        # 1. Unduh video dari YouTube
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([payload.url])
             
+        # 2. Analisis dengan Gemini
         highlight_data = analyze_and_get_highlights(temp_video_path)
         
+        # 3. Potong video
         output_name = f"viral_{unique_id}.mp4"
         final_video_path = crop_and_cut_video(
             input_path=temp_video_path,
@@ -40,14 +51,9 @@ async def generate_clip(video: UploadFile = File(...)):
         
         return {
             "status": "success",
-            "message": "Klip viral berhasil dibuat",
             "data": highlight_data,
-            "file_path": final_video_path
+            "download_url": f"/files/{output_name}"
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        
-    finally:
-        if os.path.exists(temp_video_path):
-            os.remove(temp_video_path)

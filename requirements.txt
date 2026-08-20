@@ -4,3 +4,4 @@ python-multipart
 ffmpeg-python
 python-dotenv
 google-genai
+yt-dlp
