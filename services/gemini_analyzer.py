@@ -34,7 +34,7 @@ def analyze_and_get_highlights(video_path: str) -> dict:
 
         # 3. Minta Gemini menghasilkan konten (memaksa output JSON)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.1-flash-lite",
             contents=[media_file, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
