@@ -19,12 +19,13 @@ jobs_db = {}
 
 def download_youtube_video(url: str, output_path: str):
     proxy_url = os.getenv("PROXY_URL")
+    # Menggunakan format resolusi terendah yang stabil agar ukuran file kecil dan ramah RAM kecil
     ydl_opts = {
-        'format': 'worst[ext=mp4]/worst', # Menggunakan resolusi lebih rendah agar hemat RAM dan cepat di Render
+        'format': 'worst[ext=mp4]/worst',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
-        'retries': 10,
+        'retries': 5,
         'nocheckcertificate': True,
         'rm_cachedir': True,
     }
@@ -41,6 +42,7 @@ def process_video_with_gemini(video_path: str):
     
     uploaded_file = None
     try:
+        # Mengunggah file dengan manajemen memori ketat
         uploaded_file = client.files.upload(file=video_path)
         prompt = (
             "Analisis video ini dan berikan daftar timestamp dalam format MM:SS - MM:SS "
@@ -50,15 +52,14 @@ def process_video_with_gemini(video_path: str):
             model='gemini-2.5-flash',
             contents=[uploaded_file, prompt]
         )
-        result_text = response.text
-        return result_text
+        return response.text
     finally:
         if uploaded_file:
             try:
                 client.files.delete(name=uploaded_file.name)
             except:
                 pass
-        gc.collect() # Paksa pembersihan memori
+        gc.collect()
 
 def crop_video_segment(input_path: str, start_time: str, end_time: str, output_path: str):
     command = [
@@ -90,7 +91,8 @@ def background_video_pipeline(job_id: str, video_url: str):
         
         generated_clips = []
         if timestamp_matches:
-            for idx, (start, end) in enumerate(timestamp_matches[:2]): # Batasi 2 klip dulu agar hemat memori
+            # Batasi maksimal 2 klip untuk menjaga agar RAM tidak jebol saat proses FFmpeg beruntun
+            for idx, (start, end) in enumerate(timestamp_matches[:2]):
                 clip_filename = f"{job_id}_clip_{idx+1}.mp4"
                 clip_output_path = os.path.join("temp", clip_filename)
                 if crop_video_segment(video_path, start, end, clip_output_path):
