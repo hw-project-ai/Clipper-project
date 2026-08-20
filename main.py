@@ -11,7 +11,6 @@ from config import settings
 
 app = FastAPI(title="Opus Clip Clone - Stable Edition")
 
-# Mengizinkan akses dari domain manapun (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,8 +18,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# INI KUNCINYA: Mengekspos folder output_clips agar bisa diakses secara publik
-# melalui endpoint '/files'. Ini memungkinkan clipper-cobalt.js mengunduh video.
 app.mount("/files", StaticFiles(directory=settings.OUTPUT_DIR), name="static_files")
 
 class VideoURL(BaseModel):
@@ -31,7 +28,7 @@ async def generate_clip_from_url(payload: VideoURL):
     unique_id = str(uuid.uuid4())[:8]
     temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_video.mp4")
     
-    # Konfigurasi yt-dlp yang stabil dan bersih
+    # Konfigurasi yt-dlp yang dioptimalkan untuk melewati proteksi bot YouTube di server cloud
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
         'outtmpl': temp_video_path,
@@ -39,10 +36,14 @@ async def generate_clip_from_url(payload: VideoURL):
         'no_warnings': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['web']
+                'player_client': ['android', 'ios', 'web']
             }
         }
     }
+    
+    # Jika kau nanti ingin memasukkan file cookies.txt di root folder project:
+    if os.path.exists('cookies.txt'):
+        ydl_opts['cookiefile'] = 'cookies.txt'
     
     try:
         # 1. Unduh video menggunakan yt-dlp
