@@ -4,6 +4,8 @@ FROM python:3.10-slim
 # INI BAGIAN PALING PENTING: Menginstal FFmpeg di sistem server
 RUN apt-get update && \
     apt-get install -y ffmpeg && \
+	curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
     apt-get clean
 
 # Menentukan direktori kerja di dalam server
