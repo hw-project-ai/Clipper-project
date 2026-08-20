@@ -28,7 +28,6 @@ async def generate_clip_from_url(payload: VideoURL):
     unique_id = str(uuid.uuid4())[:8]
     temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_video.mp4")
     
-    # Konfigurasi yt-dlp yang dioptimalkan untuk melewati proteksi bot YouTube di server cloud
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
         'outtmpl': temp_video_path,
@@ -41,9 +40,10 @@ async def generate_clip_from_url(payload: VideoURL):
         }
     }
     
-    # Jika kau nanti ingin memasukkan file cookies.txt di root folder project:
-    if os.path.exists('cookies.txt'):
-        ydl_opts['cookiefile'] = 'cookies.txt'
+    # Injeksi Residential Proxy dari Decodo jika tersedia
+    if settings.PROXY_URL:
+        ydl_opts['proxy'] = settings.PROXY_URL
+        print(f"[Clipper] Menggunakan proxy untuk melewati deteksi bot YouTube...")
     
     try:
         # 1. Unduh video menggunakan yt-dlp
