@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware  # <-- Tambahkan ini
 import shutil
 import os
 import uuid
@@ -9,15 +9,15 @@ from config import settings
 
 app = FastAPI(title="Opus Clip Clone - Gemini Edition")
 
-# --- TAMBAHKAN KODE INI UNTUK MENGATASI CORS ---
+# --- TAMBAHKAN BLOK INI ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Mengizinkan semua akses dari frontend manapun
+    allow_origins=["*"],  # Mengizinkan akses dari frontend mana pun
     allow_credentials=True,
     allow_methods=["*"],  # Mengizinkan semua method (POST, GET, dll)
     allow_headers=["*"],  # Mengizinkan semua header
 )
-# ----------------------------------------------
+# --------------------------
 
 @app.post("/api/v1/generate-clip")
 async def generate_clip(video: UploadFile = File(...)):
@@ -25,16 +25,11 @@ async def generate_clip(video: UploadFile = File(...)):
     temp_video_path = os.path.join(settings.TEMP_DIR, f"{unique_id}_{video.filename}")
     
     try:
-        # 1. Simpan video ke server lokal
         with open(temp_video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
             
-        # 2. Analisis dengan Gemini
-        print("Menganalisis dengan Gemini...")
         highlight_data = analyze_and_get_highlights(temp_video_path)
         
-        # 3. Potong video dengan FFmpeg
-        print("Memotong video...")
         output_name = f"viral_{unique_id}.mp4"
         final_video_path = crop_and_cut_video(
             input_path=temp_video_path,
@@ -54,6 +49,5 @@ async def generate_clip(video: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
         
     finally:
-        # 4. Bersihkan file video lokal
         if os.path.exists(temp_video_path):
             os.remove(temp_video_path)
