@@ -1,6 +1,7 @@
 import os
 import time
 import uuid
+import subprocess
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from google import genai
@@ -103,6 +104,36 @@ def process_video_with_gemini(video_path: str):
             else:
                 raise HTTPException(status_code=503, detail=f"Gagal memproses video dengan Gemini API setelah beberapa percobaan: {error_msg}")
 
+def crop_video_segment(input_path: str, start_time: str, end_time: str, output_path: str):
+    """
+    Memotong video berdasarkan timestamp dan mengubahnya menjadi format vertikal 9:16 (1080x1920) menggunakan FFmpeg.
+    """
+    command = [
+        "ffmpeg",
+        "-y",
+        "-ss", str(start_time),
+        "-to", str(end_time),
+        "-i", input_path,
+        "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-c:a", "aac",
+        output_path
+    ]
+
+    try:
+        print(f"[Clipper] Memotong video dari {start_time} hingga {end_time}...")
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        if result.returncode != 0:
+            print(f"Error FFmpeg: {result.stderr}")
+            raise HTTPException(status_code=500, detail="Gagal memproses pemotongan video dengan FFmpeg.")
+            
+        return True
+    except Exception as e:
+        print(f"Terjadi kesalahan saat menjalankan FFmpeg: {e}")
+        raise HTTPException(status_code=500, detail=f"Error internal FFmpeg: {str(e)}")
+
 @app.get("/")
 def read_root():
     return {"status": "Clipper Project Backend is running smoothly."}
@@ -115,6 +146,7 @@ def generate_clip_url(payload: dict):
 
     file_id = uuid.uuid4().hex[:8]
     video_path = os.path.join("temp", f"{file_id}_video.mp4")
+    clipped_output_path = os.path.join("temp", f"{file_id}_clip.mp4")
 
     try:
         # 1. Unduh Video menggunakan yt-dlp & PROXY_URL
@@ -123,7 +155,11 @@ def generate_clip_url(payload: dict):
         # 2. Proses dengan Gemini menggunakan klien baru
         ai_analysis = process_video_with_gemini(video_path)
 
-        # 3. Bersihkan file lokal setelah selesai
+        # 3. Contoh pemotongan segmen (bisa disesuaikan dengan parsing timestamp dari Gemini)
+        # Untuk saat ini kita jalankan fungsi pemotongan dengan sampel waktu
+        # crop_video_segment(video_path, "00:00", "00:10", clipped_output_path)
+
+        # 4. Bersihkan file video utama setelah selesai
         if os.path.exists(video_path):
             os.remove(video_path)
 
@@ -135,10 +171,14 @@ def generate_clip_url(payload: dict):
     except HTTPException as he:
         if os.path.exists(video_path):
             os.remove(video_path)
+        if os.path.exists(clipped_output_path):
+            os.remove(clipped_output_path)
         raise he
     except Exception as e:
         if os.path.exists(video_path):
             os.remove(video_path)
+        if os.path.exists(clipped_output_path):
+            os.remove(clipped_output_path)
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
