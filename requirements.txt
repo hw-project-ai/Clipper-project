@@ -9,3 +9,7 @@ playwright
 curl_cffi
 google-generativeai
 requests
+openai-whisper
+moviepy
+opencv-python-headless
+numpy
