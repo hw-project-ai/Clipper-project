@@ -5,6 +5,7 @@ import subprocess
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from google import genai
 import yt_dlp
 import re
@@ -25,6 +26,11 @@ client = genai.Client(api_key=api_key.strip()) if api_key else None
 
 os.makedirs("temp", exist_ok=True)
 jobs_db = {}
+
+class ClipRequest(BaseModel):
+    url: str
+    aspect_ratio: str = "9:16"
+    max_duration: int = 60
 
 def download_youtube_video(job_id: str, url: str, output_path: str):
     proxy_url = os.getenv("PROXY_URL")
@@ -51,7 +57,6 @@ def download_youtube_video(job_id: str, url: str, output_path: str):
         ydl.download([url])
     return True
 
-# FUNGSI INI KITA PERBARUI AGAR BISA MELAPORKAN STATUS REAL-TIME
 def process_video_with_gemini(video_path: str, job_id: str):
     if not client:
         raise Exception("GEMINI_API_KEY belum dikonfigurasi.")
@@ -63,7 +68,6 @@ def process_video_with_gemini(video_path: str, job_id: str):
         
         jobs_db[job_id]["message"] = "Tahap 2: Menunggu Google memproses video (bisa memakan waktu 2-5 menit)..."
         
-        # LOOP PINTAR: Menunggu sampai file benar-benar siap dianalisis oleh Gemini
         while uploaded_file.state.name == "PROCESSING":
             time.sleep(10)
             uploaded_file = client.files.get(name=uploaded_file.name)
@@ -77,7 +81,7 @@ def process_video_with_gemini(video_path: str, job_id: str):
             "untuk momen-momen paling menarik yang potensial dijadikan klip pendek vertikal."
         )
         response = client.models.generate_content(
-            model='gemini-3.1-flash-lite',
+            model='gemini-2.5-flash',
             contents=[uploaded_file, prompt]
         )
         return response.text
@@ -96,7 +100,6 @@ def background_video_pipeline(job_id: str, video_url: str):
         
         download_youtube_video(job_id, video_url, video_path)
 
-        # SEKARANG KITA KIRIM JOB_ID KE DALAM FUNGSI GEMINI
         ai_analysis = process_video_with_gemini(video_path, job_id)
         jobs_db[job_id]["analysis"] = ai_analysis
 
@@ -128,13 +131,20 @@ def read_root():
     return {"status": "Opus Clone Backend Running - Bypass Edition"}
 
 @app.post("/api/v1/generate-clip-url")
-def generate_clip_url(payload: dict, bg_tasks: BackgroundTasks):
-    video_url = payload.get("url")
+def generate_clip_url(payload: ClipRequest, bg_tasks: BackgroundTasks):
+    video_url = payload.url
     if not video_url:
         raise HTTPException(status_code=400, detail="URL kosong.")
     
     job_id = uuid.uuid4().hex[:8]
-    jobs_db[job_id] = {"status": "queued", "message": "Memulai proses...", "clips": [], "analysis": None}
+    jobs_db[job_id] = {
+        "status": "queued", 
+        "message": "Memulai proses...", 
+        "clips": [], 
+        "analysis": None,
+        "aspect_ratio": payload.aspect_ratio,
+        "max_duration": payload.max_duration
+    }
     bg_tasks.add_task(background_video_pipeline, job_id, video_url)
     return {"status": "success", "job_id": job_id}
 
