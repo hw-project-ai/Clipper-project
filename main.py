@@ -39,8 +39,19 @@ class ClipRequest(BaseModel):
     max_duration: int = 60
 
 def download_youtube_video(job_id: str, url: str, output_path: str):
-    # Mendukung PROXY_LIST (dipisah koma) atau PROXY_URL tunggal
     proxy_env = os.getenv("PROXY_LIST") or os.getenv("PROXY_URL")
+    
+    # Kumpulan klien YouTube untuk mengelabui deteksi bot
+    # Kita menggunakan klien 'tv' atau kombinasi 'ios' yang lebih jarang terkena blokir ketat
+    anti_bot_clients = [
+        {'youtube': ['client=ios', 'player_client=ios']},
+        {'youtube': ['client=tv', 'player_client=tv']},
+        {'youtube': ['client=mweb', 'player_client=mweb']},
+        {'youtube': ['client=web', 'player_skip=webpage']} # Bypass langsung ke API
+    ]
+    
+    # Pilih klien secara acak setiap kali mengunduh
+    selected_client = random.choice(anti_bot_clients)
     
     ydl_opts = {
         'format': 'worst[ext=mp4]/worst/bestvideo[height<=360]+bestaudio/best', 
@@ -48,17 +59,27 @@ def download_youtube_video(job_id: str, url: str, output_path: str):
         'merge_output_format': 'mp4',
         'quiet': True,
         'no_warnings': True,
-        'retries': 5,
+        'retries': 10, # Tingkatkan retries jika koneksi proxy sedang labil
         'nocheckcertificate': True,
         'rm_cachedir': True,
-        'extractor_args': {'youtube': ['client=android', 'player_client=android']} 
+        # Menyuntikkan klien yang dipilih secara acak untuk bypass
+        'extractor_args': selected_client,
+        # Menambahkan header palsu agar terlihat seperti browser asli
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-Fetch-Mode': 'navigate'
+        }
     }
     
     if proxy_env:
         proxy_list = [p.strip() for p in proxy_env.split(",") if p.strip()]
         selected_proxy = random.choice(proxy_list)
         ydl_opts['proxy'] = selected_proxy
-        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video menggunakan rotasi proxy Dedicated ISP..."
+        
+        # Mengekstrak nama klien yang sedang dipakai untuk log pesan
+        client_name = selected_client['youtube'][0].split('=')[1]
+        jobs_db[job_id]["message"] = f"Tahap 1: Mengunduh (Proxy Aktif | Menyamar sebagai perangkat {client_name.upper()})..."
     else:
         jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video ke peladen (Tanpa Proxy)..."
     
