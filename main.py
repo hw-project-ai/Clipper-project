@@ -4,12 +4,22 @@ import uuid
 import subprocess
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 import yt_dlp
 import re
 import gc
 
 app = FastAPI(title="Opus Clip Clone API")
+
+# Mengaktifkan CORS agar frontend Next.js bisa berkomunikasi tanpa hambatan
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 api_key = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key.strip()) if api_key else None
@@ -108,8 +118,6 @@ def background_video_pipeline(job_id: str, video_url: str):
         
         generated_clips = []
         if timestamp_matches:
-            # Karena video utama sudah dihapus demi menghemat RAM Render, 
-            # kita simpan data timestamp-nya agar bisa diproses lebih lanjut oleh klien.
             for idx, (start, end) in enumerate(timestamp_matches):
                 generated_clips.append({"id": idx + 1, "start": start, "end": end})
         
