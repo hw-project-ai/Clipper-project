@@ -5,6 +5,7 @@ import subprocess
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from google import genai
 import yt_dlp
@@ -21,10 +22,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Pastikan folder statis dan temp tersedia untuk penyimpanan klip
+os.makedirs("temp", exist_ok=True)
+os.makedirs("static/clips", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 api_key = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key.strip()) if api_key else None
 
-os.makedirs("temp", exist_ok=True)
 jobs_db = {}
 
 class ClipRequest(BaseModel):
@@ -93,6 +98,51 @@ def process_video_with_gemini(video_path: str, job_id: str):
                 pass
         gc.collect()
 
+def cut_video_clips(video_path: str, job_id: str, timestamp_matches):
+    output_clips = []
+    
+    def time_to_seconds(time_str):
+        parts = time_str.split(':')
+        return int(parts[0]) * 60 + int(parts[1])
+
+    job_clip_dir = os.path.join("static", "clips", job_id)
+    os.makedirs(job_clip_dir, exist_ok=True)
+
+    for idx, (start_str, end_str) in enumerate(timestamp_matches):
+        start_sec = time_to_seconds(start_str)
+        end_sec = time_to_seconds(end_str)
+        duration = end_sec - start_sec
+        
+        if duration <= 0:
+            duration = 15
+
+        output_filename = f"clip_{idx + 1}.mp4"
+        output_filepath = os.path.join(job_clip_dir, output_filename)
+
+        # Perintah FFmpeg untuk memotong dan melakukan auto-crop vertikal 9:16
+        ffmpeg_cmd = [
+            'ffmpeg', '-y',
+            '-ss', str(start_sec),
+            '-i', video_path,
+            '-t', str(duration),
+            '-vf', "crop=ih*9/16:ih",
+            '-c:v', 'libx264', '-c:a', 'aac',
+            output_filepath
+        ]
+
+        try:
+            subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            output_clips.append({
+                "id": idx + 1,
+                "start": start_str,
+                "end": end_str,
+                "url": f"/static/clips/{job_id}/{output_filename}"
+            })
+        except subprocess.CalledProcessError:
+            continue
+
+    return output_clips
+
 def background_video_pipeline(job_id: str, video_url: str):
     video_path = os.path.join("temp", f"{job_id}_video.mp4")
     try:
@@ -103,17 +153,12 @@ def background_video_pipeline(job_id: str, video_url: str):
         ai_analysis = process_video_with_gemini(video_path, job_id)
         jobs_db[job_id]["analysis"] = ai_analysis
 
-        if os.path.exists(video_path):
-            os.remove(video_path)
-        gc.collect()
-
-        jobs_db[job_id]["message"] = "Tahap Akhir: Merapikan hasil timestamp..."
+        jobs_db[job_id]["message"] = "Tahap Akhir: Memotong video dengan FFmpeg ke rasio 9:16..."
         timestamp_matches = re.findall(r'(\d{2}:\d{2})\s*[-–to]+\s*(\d{2}:\d{2})', ai_analysis)
         
         generated_clips = []
         if timestamp_matches:
-            for idx, (start, end) in enumerate(timestamp_matches):
-                generated_clips.append({"id": idx + 1, "start": start, "end": end})
+            generated_clips = cut_video_clips(video_path, job_id, timestamp_matches)
         
         jobs_db[job_id]["clips"] = generated_clips
         jobs_db[job_id]["status"] = "completed"
@@ -128,7 +173,7 @@ def background_video_pipeline(job_id: str, video_url: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Opus Clone Backend Running - Bypass Edition"}
+    return {"status": "Opus Clone Backend Running - FFmpeg Active"}
 
 @app.post("/api/v1/generate-clip-url")
 def generate_clip_url(payload: ClipRequest, bg_tasks: BackgroundTasks):
