@@ -84,10 +84,17 @@ def process_video_with_gemini(video_path: str, job_id: str):
         if uploaded_file.state.name == "FAILED":
             raise Exception("Google gagal/menolak memproses video ini.")
 
-        jobs_db[job_id]["message"] = "Tahap 3: Video siap! Gemini sedang memikirkan momen terbaik..."
+        jobs_db[job_id]["message"] = "Tahap 3: Video siap! Gemini sedang mengekstrak dialog..."
+        
+        # PROMPT BARU: Tanpa analisis, hanya dialog mentah.
         prompt = (
-            "Analisis video ini dan berikan daftar timestamp dalam format MM:SS - MM:SS "
-            "untuk momen-momen paling menarik yang potensial dijadikan klip pendek vertikal."
+            "Tugasmu adalah bertindak sebagai asisten ekstraksi video viral. "
+            "Jangan berikan analisis, opini, atau ringkasan. "
+            "Cari momen-momen percakapan yang paling menarik, lalu berikan hasilnya "
+            "HANYA dalam format ini:\n\n"
+            "MM:SS - MM:SS\n"
+            "Dialog yang diucapkan pada momen tersebut secara persis.\n\n"
+            "Lakukan untuk 3 sampai 5 momen terbaik."
         )
         response = client.models.generate_content(
             model='gemini-3.1-flash-lite',
