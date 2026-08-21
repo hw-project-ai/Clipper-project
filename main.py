@@ -81,7 +81,7 @@ def process_video_with_gemini(video_path: str, job_id: str):
             "untuk momen-momen paling menarik yang potensial dijadikan klip pendek vertikal."
         )
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.1-flash-lite',
             contents=[uploaded_file, prompt]
         )
         return response.text
