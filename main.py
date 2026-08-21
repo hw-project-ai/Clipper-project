@@ -2,6 +2,7 @@ import os
 import time
 import uuid
 import subprocess
+import random
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +13,7 @@ import yt_dlp
 import re
 import gc
 
-app = FastAPI(title="Opus Clip Clone API")
+app = FastAPI(title="Opus Clip Clone API - Full Integration")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,7 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Pastikan folder statis dan temp tersedia untuk penyimpanan klip
+# Pastikan direktori penampung sementara dan klip statis tersedia
 os.makedirs("temp", exist_ok=True)
 os.makedirs("static/clips", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -38,7 +39,8 @@ class ClipRequest(BaseModel):
     max_duration: int = 60
 
 def download_youtube_video(job_id: str, url: str, output_path: str):
-    proxy_url = os.getenv("PROXY_URL")
+    # Mendukung PROXY_LIST (dipisah koma) atau PROXY_URL tunggal
+    proxy_env = os.getenv("PROXY_LIST") or os.getenv("PROXY_URL")
     
     ydl_opts = {
         'format': 'worst[ext=mp4]/worst/bestvideo[height<=360]+bestaudio/best', 
@@ -52,11 +54,13 @@ def download_youtube_video(job_id: str, url: str, output_path: str):
         'extractor_args': {'youtube': ['client=android', 'player_client=android']} 
     }
     
-    if proxy_url:
-        ydl_opts['proxy'] = proxy_url.strip()
-        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video ke peladen (Proxy Aktif)..."
+    if proxy_env:
+        proxy_list = [p.strip() for p in proxy_env.split(",") if p.strip()]
+        selected_proxy = random.choice(proxy_list)
+        ydl_opts['proxy'] = selected_proxy
+        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video menggunakan rotasi proxy Dedicated ISP..."
     else:
-        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video ke peladen..."
+        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video ke peladen (Tanpa Proxy)..."
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -173,7 +177,7 @@ def background_video_pipeline(job_id: str, video_url: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Opus Clone Backend Running - FFmpeg Active"}
+    return {"status": "Clipper Project Backend Running - Proxy & FFmpeg Active"}
 
 @app.post("/api/v1/generate-clip-url")
 def generate_clip_url(payload: ClipRequest, bg_tasks: BackgroundTasks):
