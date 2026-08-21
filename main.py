@@ -12,7 +12,6 @@ import gc
 
 app = FastAPI(title="Opus Clip Clone API")
 
-# Mengaktifkan CORS agar frontend Next.js bisa berkomunikasi tanpa hambatan
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,11 +29,10 @@ jobs_db = {}
 def download_youtube_video(job_id: str, url: str, output_path: str):
     proxy_url = os.getenv("PROXY_URL")
     
-    # Format fallback + Bypass Android + Paksa konversi ke MP4
     ydl_opts = {
         'format': 'worst[ext=mp4]/worst/bestvideo[height<=360]+bestaudio/best', 
         'outtmpl': output_path,
-        'merge_output_format': 'mp4', # INI KUNCINYA AGAR FILE SELALU .MP4
+        'merge_output_format': 'mp4',
         'quiet': True,
         'no_warnings': True,
         'retries': 5,
@@ -45,21 +43,35 @@ def download_youtube_video(job_id: str, url: str, output_path: str):
     
     if proxy_url:
         ydl_opts['proxy'] = proxy_url.strip()
-        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video (MENGGUNAKAN PROXY & Bypass Android)..."
+        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video ke peladen (Proxy Aktif)..."
     else:
-        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video (TANPA PROXY - Bypass Android)..."
+        jobs_db[job_id]["message"] = "Tahap 1: Mengunduh video ke peladen..."
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     return True
 
-def process_video_with_gemini(video_path: str):
+# FUNGSI INI KITA PERBARUI AGAR BISA MELAPORKAN STATUS REAL-TIME
+def process_video_with_gemini(video_path: str, job_id: str):
     if not client:
         raise Exception("GEMINI_API_KEY belum dikonfigurasi.")
     
     uploaded_file = None
     try:
+        jobs_db[job_id]["message"] = "Tahap 2: Mengunggah video ke peladen Google Gemini..."
         uploaded_file = client.files.upload(file=video_path)
+        
+        jobs_db[job_id]["message"] = "Tahap 2: Menunggu Google memproses video (bisa memakan waktu 2-5 menit)..."
+        
+        # LOOP PINTAR: Menunggu sampai file benar-benar siap dianalisis oleh Gemini
+        while uploaded_file.state.name == "PROCESSING":
+            time.sleep(10)
+            uploaded_file = client.files.get(name=uploaded_file.name)
+            
+        if uploaded_file.state.name == "FAILED":
+            raise Exception("Google gagal/menolak memproses video ini.")
+
+        jobs_db[job_id]["message"] = "Tahap 3: Video siap! Gemini sedang memikirkan momen terbaik..."
         prompt = (
             "Analisis video ini dan berikan daftar timestamp dalam format MM:SS - MM:SS "
             "untuk momen-momen paling menarik yang potensial dijadikan klip pendek vertikal."
@@ -77,43 +89,22 @@ def process_video_with_gemini(video_path: str):
                 pass
         gc.collect()
 
-def crop_video_segment(input_path: str, start_time: str, end_time: str, output_path: str):
-    # Mode sangat hemat RAM: -threads 1
-    command = [
-        "ffmpeg", "-y",
-        "-ss", str(start_time),
-        "-to", str(end_time),
-        "-i", input_path,
-        "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-        "-c:v", "libx264", 
-        "-preset", "ultrafast", 
-        "-threads", "1", 
-        "-max_muxing_queue_size", "1024",
-        "-c:a", "aac", 
-        output_path
-    ]
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    gc.collect()
-    return result.returncode == 0
-
 def background_video_pipeline(job_id: str, video_url: str):
     video_path = os.path.join("temp", f"{job_id}_video.mp4")
     try:
         jobs_db[job_id]["status"] = "processing"
         
-        # Eksekusi unduhan (dengan jaminan output .mp4)
         download_youtube_video(job_id, video_url, video_path)
 
-        jobs_db[job_id]["message"] = "Tahap 2: Menganalisis dengan Gemini 3.1 Flash Lite..."
-        ai_analysis = process_video_with_gemini(video_path)
+        # SEKARANG KITA KIRIM JOB_ID KE DALAM FUNGSI GEMINI
+        ai_analysis = process_video_with_gemini(video_path, job_id)
         jobs_db[job_id]["analysis"] = ai_analysis
 
-        # Hapus video utama untuk menyelamatkan RAM sebelum FFmpeg bekerja
         if os.path.exists(video_path):
             os.remove(video_path)
         gc.collect()
 
-        jobs_db[job_id]["message"] = "Tahap 3: Ekstraksi timestamp selesai (Video sumber telah dihapus demi RAM)..."
+        jobs_db[job_id]["message"] = "Tahap Akhir: Merapikan hasil timestamp..."
         timestamp_matches = re.findall(r'(\d{2}:\d{2})\s*[-–to]+\s*(\d{2}:\d{2})', ai_analysis)
         
         generated_clips = []
@@ -123,7 +114,7 @@ def background_video_pipeline(job_id: str, video_url: str):
         
         jobs_db[job_id]["clips"] = generated_clips
         jobs_db[job_id]["status"] = "completed"
-        jobs_db[job_id]["message"] = "Semua proses analisis selesai tanpa crash!"
+        jobs_db[job_id]["message"] = "Semua proses selesai dengan sempurna!"
     except Exception as e:
         jobs_db[job_id]["status"] = "failed"
         jobs_db[job_id]["message"] = f"Error: {str(e)}"
@@ -143,7 +134,7 @@ def generate_clip_url(payload: dict, bg_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail="URL kosong.")
     
     job_id = uuid.uuid4().hex[:8]
-    jobs_db[job_id] = {"status": "queued", "message": "Pekerjaan masuk antrean...", "clips": [], "analysis": None}
+    jobs_db[job_id] = {"status": "queued", "message": "Memulai proses...", "clips": [], "analysis": None}
     bg_tasks.add_task(background_video_pipeline, job_id, video_url)
     return {"status": "success", "job_id": job_id}
 
