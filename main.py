@@ -1,20 +1,23 @@
 import os
 import time
 import uuid
-import subprocess
 import random
 import uvicorn
+import gc
+import cv2
+import numpy as np
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from google import genai
 import yt_dlp
-import re
-import gc
 from playwright.sync_api import sync_playwright
 
-app = FastAPI(title="Clipper Studio API - Enterprise Bypass Edition")
+# --- Pustaka AI & Pengolahan Video ---
+import whisper
+from moviepy.video.io.VideoFileClip import VideoFileClip
+
+app = FastAPI(title="Clipper Studio API - Enterprise AI Edition")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,9 +31,6 @@ os.makedirs("temp", exist_ok=True)
 os.makedirs("static/clips", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key.strip()) if api_key else None
-
 jobs_db = {}
 
 class ClipRequest(BaseModel):
@@ -38,7 +38,10 @@ class ClipRequest(BaseModel):
     aspect_ratio: str = "9:16"
     max_duration: int = 60
 
+# --- Modul 1: Ingestion & Bypass Keamanan ---
+
 def generate_fresh_cookies(proxy_url: str = None):
+    """Menghasilkan session cookies segar untuk bypass keamanan YouTube."""
     cookie_file_path = f"temp/youtube_cookies_{uuid.uuid4().hex[:6]}.txt"
     
     with sync_playwright() as p:
@@ -79,6 +82,7 @@ def generate_fresh_cookies(proxy_url: str = None):
             browser.close()
 
 def download_youtube_video(job_id: str, url: str, output_path: str):
+    """Mengunduh video mentah menggunakan yt-dlp dan cookies."""
     proxy_env = os.getenv("PROXY_LIST") or os.getenv("PROXY_URL")
     selected_proxy = None
     
@@ -86,7 +90,7 @@ def download_youtube_video(job_id: str, url: str, output_path: str):
         proxy_list = [p.strip() for p in proxy_env.split(",") if p.strip()]
         selected_proxy = random.choice(proxy_list)
     
-    jobs_db[job_id]["message"] = "Tahap 1: Membangkitkan session cookies otomatis (Bypass)..."
+    jobs_db[job_id]["message"] = "Tahap 1: Membangkitkan session cookies (Bypass)..."
     cookie_file = generate_fresh_cookies(selected_proxy)
     
     ydl_opts = {
@@ -102,9 +106,8 @@ def download_youtube_video(job_id: str, url: str, output_path: str):
     
     if selected_proxy:
         ydl_opts['proxy'] = selected_proxy
-        jobs_db[job_id]["message"] = "Tahap 2: Mengunduh video dengan Proxy & Cookies otomatis..."
-    else:
-        jobs_db[job_id]["message"] = "Tahap 2: Mengunduh video (Tanpa Proxy)..."
+    
+    jobs_db[job_id]["message"] = "Tahap 2: Mengunduh video mentah..."
         
     if cookie_file and os.path.exists(cookie_file):
         ydl_opts['cookiefile'] = cookie_file
@@ -113,96 +116,142 @@ def download_youtube_video(job_id: str, url: str, output_path: str):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
     finally:
-        # Selalu bersihkan file cookie unik agar tidak menumpuk
         if cookie_file and os.path.exists(cookie_file):
             os.remove(cookie_file)
             
     return True
 
-def process_video_with_gemini(video_path: str, job_id: str):
-    if not client:
-        raise Exception("GEMINI_API_KEY belum dikonfigurasi.")
+# --- Modul 2: Local AI Transcription & Scoring ---
+
+def process_video_with_local_ai(video_path: str, job_id: str):
+    """Ekstraksi audio, STT dengan Whisper, dan analisis kepadatan dialog."""
+    jobs_db[job_id]["message"] = "Tahap 3: AI Whisper Mengekstrak Transkrip & Timestamps..."
     
-    uploaded_file = None
-    try:
-        jobs_db[job_id]["message"] = "Tahap 3: Mengunggah video ke peladen Google Gemini..."
-        uploaded_file = client.files.upload(file=video_path)
+    model = whisper.load_model("base")
+    result = model.transcribe(video_path, word_timestamps=True)
+    
+    jobs_db[job_id]["message"] = "Tahap 4: AI Menganalisis Hook & Value..."
+    segments = result.get("segments", [])
+    
+    scored_segments = []
+    for seg in segments:
+        duration = seg['end'] - seg['start']
+        if duration < 5:
+            continue
+        word_count = len(seg['text'].split())
+        density = word_count / duration 
+        scored_segments.append({
+            'start': seg['start'],
+            'end': seg['end'],
+            'text': seg['text'],
+            'score': density,
+            'words': seg.get('words', []) # Simpan data kata demi kata untuk subtitle nanti
+        })
+    
+    # Ambil 3 momen terbaik
+    top_segments = sorted(scored_segments, key=lambda x: x['score'], reverse=True)[:3]
+    
+    analysis_text = ""
+    timestamp_matches = []
+    for idx, ts in enumerate(top_segments):
+        start_fmt = time.strftime('%M:%S', time.gmtime(ts['start']))
+        end_fmt = time.strftime('%M:%S', time.gmtime(ts['end'] + 15)) 
+        analysis_text += f"{start_fmt} - {end_fmt}\n{ts['text']}\n\n"
+        # Kirim data 'words' ke tahap pemotongan untuk overlay subtitle
+        timestamp_matches.append({
+            'start': ts['start'], 
+            'end': ts['start'] + 15,
+            'words': ts['words'] 
+        })
         
-        jobs_db[job_id]["message"] = "Tahap 3: Menunggu Google memproses video..."
-        
-        while uploaded_file.state.name == "PROCESSING":
-            time.sleep(10)
-            uploaded_file = client.files.get(name=uploaded_file.name)
-            
-        if uploaded_file.state.name == "FAILED":
-            raise Exception("Google gagal/menolak memproses video ini.")
+    return analysis_text, timestamp_matches
 
-        jobs_db[job_id]["message"] = "Tahap 4: Ekstraksi dialog momen viral..."
-        prompt = (
-            "Tugasmu adalah bertindak sebagai asisten ekstraksi video viral. "
-            "Jangan berikan analisis, opini, atau ringkasan. "
-            "Cari momen-momen percakapan yang paling menarik, lalu berikan hasilnya "
-            "HANYA dalam format ini:\n\n"
-            "MM:SS - MM:SS\n"
-            "Dialog yang diucapkan pada momen tersebut secara persis.\n\n"
-            "Lakukan untuk 3 sampai 5 momen terbaik."
-        )
-        response = client.models.generate_content(
-            model='gemini-3.1-flash-lite',
-            contents=[uploaded_file, prompt]
-        )
-        return response.text
-    finally:
-        if uploaded_file:
-            try:
-                client.files.delete(name=uploaded_file.name)
-            except:
-                pass
-        gc.collect()
+# --- Modul 3: OpenCV Face Tracking & MoviePy Rendering ---
 
-def cut_video_clips(video_path: str, job_id: str, timestamp_matches):
+def get_face_center(frame, cascade_path):
+    """Mendeteksi wajah menggunakan OpenCV."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    face_cascade = cv2.CascadeClassifier(cascade_path)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    
+    if len(faces) > 0:
+        faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
+        x, y, w, h = faces[0]
+        return x + (w / 2)
+    return None
+
+def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matches):
+    """Memotong video dengan Smart Auto-Framing 9:16 OpenCV."""
     output_clips = []
-    
-    def time_to_seconds(time_str):
-        parts = time_str.split(':')
-        return int(parts[0]) * 60 + int(parts[1])
-
     job_clip_dir = os.path.join("static", "clips", job_id)
     os.makedirs(job_clip_dir, exist_ok=True)
+    
+    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
 
-    for idx, (start_str, end_str) in enumerate(timestamp_matches):
-        start_sec = time_to_seconds(start_str)
-        end_sec = time_to_seconds(end_str)
-        duration = end_sec - start_sec
-        
-        if duration <= 0:
-            duration = 15
+    with VideoFileClip(video_path) as video:
+        for idx, clip_data in enumerate(timestamp_matches):
+            start_sec = clip_data['start']
+            end_sec = min(video.duration, clip_data['end'])
+            output_filename = f"clip_{idx + 1}.mp4"
+            output_filepath = os.path.join(job_clip_dir, output_filename)
 
-        output_filename = f"clip_{idx + 1}.mp4"
-        output_filepath = os.path.join(job_clip_dir, output_filename)
+            try:
+                subclip = video.subclipped(start_sec, end_sec)
+                w, h = subclip.size
+                target_w = int(h * (9 / 16))
+                
+                last_x_center = w / 2 
+                smoothing_factor = 0.1 
+                
+                def track_and_crop(get_frame, t):
+                    nonlocal last_x_center
+                    frame = get_frame(t)
+                    
+                    face_center = get_face_center(frame, cascade_path)
+                    
+                    if face_center is not None:
+                        current_x_center = last_x_center + (face_center - last_x_center) * smoothing_factor
+                    else:
+                        current_x_center = last_x_center
+                        
+                    last_x_center = current_x_center
+                    
+                    x1 = int(max(0, current_x_center - (target_w / 2)))
+                    x2 = int(x1 + target_w)
+                    
+                    if x2 > w:
+                        x2 = w
+                        x1 = w - target_w
+                        
+                    return frame[:, x1:x2]
 
-        ffmpeg_cmd = [
-            'ffmpeg', '-y',
-            '-ss', str(start_sec),
-            '-i', video_path,
-            '-t', str(duration),
-            '-vf', "crop=ih*9/16:ih",
-            '-c:v', 'libx264', '-c:a', 'aac',
-            output_filepath
-        ]
-
-        try:
-            subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            output_clips.append({
-                "id": idx + 1,
-                "start": start_str,
-                "end": end_str,
-                "url": f"/static/clips/{job_id}/{output_filename}"
-            })
-        except subprocess.CalledProcessError:
-            continue
+                tracked_clip = subclip.fl(track_and_crop)
+                
+                tracked_clip.write_videofile(
+                    output_filepath, 
+                    codec="libx264", 
+                    audio_codec="aac", 
+                    preset="fast",
+                    logger=None
+                )
+                
+                start_str = time.strftime('%M:%S', time.gmtime(start_sec))
+                end_str = time.strftime('%M:%S', time.gmtime(end_sec))
+                
+                output_clips.append({
+                    "id": idx + 1,
+                    "start": start_str,
+                    "end": end_str,
+                    "url": f"/static/clips/{job_id}/{output_filename}"
+                })
+                
+            except Exception as e:
+                print(f"Gagal memotong klip {idx+1}: {e}")
+                continue
 
     return output_clips
+
+# --- Modul Utama: Orchestrator Pipeline ---
 
 def background_video_pipeline(job_id: str, video_url: str):
     video_path = os.path.join("temp", f"{job_id}_video.mp4")
@@ -211,30 +260,26 @@ def background_video_pipeline(job_id: str, video_url: str):
         
         download_youtube_video(job_id, video_url, video_path)
 
-        ai_analysis = process_video_with_gemini(video_path, job_id)
-        jobs_db[job_id]["analysis"] = ai_analysis
+        ai_analysis_text, timestamp_matches = process_video_with_local_ai(video_path, job_id)
+        jobs_db[job_id]["analysis"] = ai_analysis_text
 
-        jobs_db[job_id]["message"] = "Tahap Akhir: Memotong video dengan FFmpeg ke rasio 9:16..."
-        timestamp_matches = re.findall(r'(\d{2}:\d{2})\s*[-–to]+\s*(\d{2}:\d{2})', ai_analysis)
+        jobs_db[job_id]["message"] = "Tahap Akhir: Merender klip dengan Face Tracking..."
         
         generated_clips = []
         if timestamp_matches:
-            generated_clips = cut_video_clips(video_path, job_id, timestamp_matches)
+            generated_clips = cut_video_clips_with_tracking(video_path, job_id, timestamp_matches)
         
         jobs_db[job_id]["clips"] = generated_clips
         jobs_db[job_id]["status"] = "completed"
         jobs_db[job_id]["message"] = "Semua proses selesai dengan sempurna!"
+        
     except Exception as e:
         jobs_db[job_id]["status"] = "failed"
-        jobs_db[job_id]["message"] = f"Error: {str(e)}"
+        jobs_db[job_id]["message"] = f"Error Server: {str(e)}"
     finally:
         if os.path.exists(video_path):
             os.remove(video_path)
         gc.collect()
-
-@app.get("/")
-def read_root():
-    return {"status": "Clipper Project Backend Running - Enterprise Proxy Bypass Active"}
 
 @app.post("/api/v1/generate-clip-url")
 def generate_clip_url(payload: ClipRequest, bg_tasks: BackgroundTasks):
@@ -245,12 +290,11 @@ def generate_clip_url(payload: ClipRequest, bg_tasks: BackgroundTasks):
     job_id = uuid.uuid4().hex[:8]
     jobs_db[job_id] = {
         "status": "queued", 
-        "message": "Memulai proses...", 
+        "message": "Memulai proses antrean AI...", 
         "clips": [], 
-        "analysis": None,
-        "aspect_ratio": payload.aspect_ratio,
-        "max_duration": payload.max_duration
+        "analysis": None
     }
+    
     bg_tasks.add_task(background_video_pipeline, job_id, video_url)
     return {"status": "success", "job_id": job_id}
 
@@ -258,7 +302,7 @@ def generate_clip_url(payload: ClipRequest, bg_tasks: BackgroundTasks):
 def get_job_status(job_id: str):
     job = jobs_db.get(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Tidak ditemukan.")
+        raise HTTPException(status_code=404, detail="Job ID tidak ditemukan.")
     return job
 
 if __name__ == "__main__":
