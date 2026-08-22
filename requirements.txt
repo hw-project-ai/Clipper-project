@@ -14,4 +14,3 @@ moviepy
 opencv-python-headless
 numpy
 groq
-cv2
