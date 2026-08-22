@@ -103,7 +103,6 @@ def download_youtube_video(job_id: str, url: str, output_path: str, max_retries:
             'no_warnings': True,
             'nocheckcertificate': True,
             'rm_cachedir': True,
-            # Identitas klien Android untuk mengecoh pertahanan YouTube
             'extractor_args': {'youtube': ['player_client=android', 'player_skip=web']},
         }
         
@@ -119,7 +118,6 @@ def download_youtube_video(job_id: str, url: str, output_path: str, max_retries:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
             
-            # Jika berhasil, bersihkan file cookie dan keluar dari loop
             if cookie_file and os.path.exists(cookie_file):
                 os.remove(cookie_file)
             return True
@@ -128,18 +126,15 @@ def download_youtube_video(job_id: str, url: str, output_path: str, max_retries:
             error_msg = str(e)
             print(f"[Worker] Percobaan {attempt + 1} gagal: {error_msg}")
             
-            # Selalu bersihkan cookie yang gagal agar tidak menumpuk di memori
             if cookie_file and os.path.exists(cookie_file):
                 os.remove(cookie_file)
                 
-            # Logika Deteksi Pemblokiran Bot YouTube
             if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
                 if attempt < max_retries - 1:
                     jobs_db[job_id]["message"] = "Terdeteksi blokir dari YouTube. Membuang identitas lama dan meretas ulang..."
-                    time.sleep(3) # Jeda strategis sebelum mencoba membuat sesi baru
-                    continue # Paksa perulangan kembali ke tahap 1
+                    time.sleep(3)
+                    continue
             
-            # Jika error bukan karena bot, atau sudah mencapai batas maksimal percobaan, serah menyerah
             if attempt == max_retries - 1:
                 raise Exception(f"Gagal mengunduh video setelah {max_retries} kali percobaan pembobolan. Error asli: {error_msg}")
 
@@ -160,25 +155,21 @@ def process_video_with_groq(video_path: str, job_id: str):
     audio_path = os.path.join("temp", f"{job_id}_audio.mp3")
     
     try:
-        # 1. Ekstraksi Audio Ringan (Lokal)
         jobs_db[job_id]["message"] = "Tahap 3: Mengekstrak audio untuk dikirim ke Cloud AI..."
         with VideoFileClip(video_path) as video:
             audio = video.audio
             audio.write_audiofile(audio_path, codec='libmp3lame', bitrate='64k', logger=None)
             
-        # 2. Transkripsi Kilat via Groq LPU
         jobs_db[job_id]["message"] = "Tahap 4: Groq AI menganalisis transkrip dalam hitungan detik..."
         with open(audio_path, "rb") as file:
             transcription = client.audio.transcriptions.create(
                 file=(audio_path, file.read()),
                 model="whisper-large-v3",
-                response_format="verbose_json", # Meminta word-level timestamps
+                response_format="verbose_json",
             )
         
-        # 3. Analisis Hook & Value (Simulasi lokal pada data teks)
         jobs_db[job_id]["message"] = "Tahap 5: Menyaring momen viral..."
         
-        # Groq mengembalikan JSON dengan array 'segments' yang berisi timestamps
         segments = transcription.segments
         
         scored_segments = []
@@ -193,10 +184,9 @@ def process_video_with_groq(video_path: str, job_id: str):
                 'end': seg['end'],
                 'text': seg['text'],
                 'score': density,
-                'words': seg.get('words', []) # Persiapan untuk subtitle animasi
+                'words': seg.get('words', [])
             })
         
-        # Ambil 3 momen terbaik
         top_segments = sorted(scored_segments, key=lambda x: x['score'], reverse=True)[:3]
         
         analysis_text = ""
@@ -214,7 +204,6 @@ def process_video_with_groq(video_path: str, job_id: str):
         return analysis_text, timestamp_matches
 
     finally:
-        # Selalu bersihkan file audio sementara
         if os.path.exists(audio_path):
             os.remove(audio_path)
 
@@ -310,14 +299,11 @@ def background_video_pipeline(job_id: str, video_url: str):
     try:
         jobs_db[job_id]["status"] = "processing"
         
-        # 1. Ingestion (Menggunakan fungsi bypass cerdas)
         download_youtube_video(job_id, video_url, video_path)
 
-        # 2. Pemrosesan AI Cloud (Groq)
         ai_analysis_text, timestamp_matches = process_video_with_groq(video_path, job_id)
         jobs_db[job_id]["analysis"] = ai_analysis_text
 
-        # 3. OpenCV Tracking & Render
         jobs_db[job_id]["message"] = "Tahap Akhir: Merender klip dengan Face Tracking..."
         
         generated_clips = []
