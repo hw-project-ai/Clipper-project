@@ -221,75 +221,44 @@ def get_face_center(frame, cascade_path):
         return x + (w / 2)
     return None
 
+# --- Modul 3: Rendering Karaoke Subtitle (Fix Method: subclip) ---
 def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matches):
-    """Memotong video dengan Smart Auto-Framing 9:16 OpenCV."""
     output_clips = []
-    job_clip_dir = os.path.join("static", "clips", job_id)
-    os.makedirs(job_clip_dir, exist_ok=True)
-    
     cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    video = VideoFileClip(video_path)
+    
+    for idx, clip_data in enumerate(timestamp_matches):
+        # MENGGUNAKAN subclip() BUKAN subclipped()
+        subclip = video.subclip(clip_data['start'], min(video.duration, clip_data['end']))
+        w, h = subclip.size
+        target_w = int(h * (9 / 16))
+        
+        subtitle_clips = []
+        for word_obj in clip_data['words']:
+            start = word_obj['start'] - clip_data['start']
+            duration = word_obj['end'] - word_obj['start']
+            txt = TextClip(word_obj['word'], fontsize=70, color='yellow', font='Arial-Bold', stroke_color='black', stroke_width=2)
+            txt = txt.set_start(start).set_duration(duration).set_position(('center', 'center'))
+            subtitle_clips.append(txt)
+            
+        last_x = w / 2
+        def process_frame(frame):
+            nonlocal last_x
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = cv2.CascadeClassifier(cascade_path).detectMultiScale(gray, 1.1, 5)
+            x_center = faces[0][0] + faces[0][2]/2 if len(faces) > 0 else last_x
+            last_x = last_x + (x_center - last_x) * 0.1
+            x1 = int(max(0, min(last_x - target_w/2, w - target_w)))
+            return frame[:, x1:x1+target_w]
 
-    with VideoFileClip(video_path) as video:
-        for idx, clip_data in enumerate(timestamp_matches):
-            start_sec = clip_data['start']
-            end_sec = min(video.duration, clip_data['end'])
-            output_filename = f"clip_{idx + 1}.mp4"
-            output_filepath = os.path.join(job_clip_dir, output_filename)
-
-            try:
-                subclip = video.subclipped(start_sec, end_sec)
-                w, h = subclip.size
-                target_w = int(h * (9 / 16))
-                
-                last_x_center = w / 2 
-                smoothing_factor = 0.1 
-                
-                def track_and_crop(get_frame, t):
-                    nonlocal last_x_center
-                    frame = get_frame(t)
-                    
-                    face_center = get_face_center(frame, cascade_path)
-                    
-                    if face_center is not None:
-                        current_x_center = last_x_center + (face_center - last_x_center) * smoothing_factor
-                    else:
-                        current_x_center = last_x_center
-                        
-                    last_x_center = current_x_center
-                    
-                    x1 = int(max(0, current_x_center - (target_w / 2)))
-                    x2 = int(x1 + target_w)
-                    
-                    if x2 > w:
-                        x2 = w
-                        x1 = w - target_w
-                        
-                    return frame[:, x1:x2]
-
-                tracked_clip = subclip.fl(track_and_crop)
-                
-                tracked_clip.write_videofile(
-                    output_filepath, 
-                    codec="libx264", 
-                    audio_codec="aac", 
-                    preset="fast",
-                    logger=None
-                )
-                
-                start_str = time.strftime('%M:%S', time.gmtime(start_sec))
-                end_str = time.strftime('%M:%S', time.gmtime(end_sec))
-                
-                output_clips.append({
-                    "id": idx + 1,
-                    "start": start_str,
-                    "end": end_str,
-                    "url": f"/static/clips/{job_id}/{output_filename}"
-                })
-                
-            except Exception as e:
-                print(f"Gagal memotong klip {idx+1}: {e}")
-                continue
-
+        tracked_clip = subclip.fl_image(process_frame)
+        final_clip = CompositeVideoClip([tracked_clip] + subtitle_clips)
+        
+        output_path = f"static/clips/{job_id}/clip_{idx+1}.mp4"
+        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+        output_clips.append({"id": idx+1, "url": f"/static/clips/{job_id}/clip_{idx+1}.mp4"})
+    
+    video.close()
     return output_clips
 
 # --- Modul Utama: Orchestrator Pipeline ---
