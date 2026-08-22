@@ -28,10 +28,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Menyiapkan direktori penyimpanan
 os.makedirs("temp", exist_ok=True)
 os.makedirs("static/clips", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Database sederhana dalam memori untuk melacak status job
 jobs_db = {}
 
 class ClipRequest(BaseModel):
@@ -41,7 +43,7 @@ class ClipRequest(BaseModel):
 
 # --- Modul 0: Auto-Download Haar Cascade ---
 def ensure_haar_cascade():
-    """Memastikan file model pelacak wajah OpenCV tersedia di peladen."""
+    """Memastikan file model pelacak wajah OpenCV tersedia di server."""
     cascade_filename = "haarcascade_frontalface_default.xml"
     if not os.path.exists(cascade_filename):
         print("[Sistem] Mendownload Haar Cascade secara manual...")
@@ -92,16 +94,14 @@ def generate_fresh_cookies(proxy_url: str = None):
             browser.close()
 
 def download_youtube_video(job_id: str, url: str, output_path: str, max_retries: int = 10):
-    """
-    Mengunduh video mentah dengan mekanisme Auto-Retry super agresif (10x).
-    """
+    """Mengunduh video mentah dengan mekanisme Auto-Retry."""
     proxy_env = os.getenv("PROXY_LIST") or os.getenv("PROXY_URL")
     proxy_list = [p.strip() for p in proxy_env.split(",")] if proxy_env else []
 
     for attempt in range(max_retries):
         selected_proxy = random.choice(proxy_list) if proxy_list else None
         
-        jobs_db[job_id]["message"] = f"Tahap 1: Membangkitkan session cookies (Percobaan Bypass {attempt + 1}/{max_retries})..."
+        jobs_db[job_id]["message"] = f"Tahap 1: Membangkitkan session cookies (Percobaan {attempt + 1}/{max_retries})..."
         cookie_file = generate_fresh_cookies(selected_proxy)
         
         ydl_opts = {
@@ -140,7 +140,7 @@ def download_youtube_video(job_id: str, url: str, output_path: str, max_retries:
                 
             if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
                 if attempt < max_retries - 1:
-                    jobs_db[job_id]["message"] = f"Terdeteksi blokir (Percobaan {attempt + 1}/{max_retries}). Meretas identitas baru..."
+                    jobs_db[job_id]["message"] = f"Terdeteksi blokir (Percobaan {attempt + 1}/{max_retries}). Mengulang..."
                     time.sleep(3)
                     continue
             
@@ -153,18 +153,18 @@ def download_youtube_video(job_id: str, url: str, output_path: str, max_retries:
 def process_video_with_groq(video_path: str, job_id: str):
     groq_api_key = os.getenv("GROQ_API_KEY")
     if not groq_api_key:
-        raise Exception("GROQ_API_KEY belum dikonfigurasi di peladen.")
+        raise Exception("GROQ_API_KEY belum dikonfigurasi di server.")
     
     client = Groq(api_key=groq_api_key)
     audio_path = os.path.join("temp", f"{job_id}_audio.mp3")
     
     try:
-        jobs_db[job_id]["message"] = "Tahap 3: Mengekstrak audio untuk dikirim ke Cloud AI..."
+        jobs_db[job_id]["message"] = "Tahap 3: Mengekstrak audio untuk Cloud AI..."
         with VideoFileClip(video_path) as video:
             audio = video.audio
             audio.write_audiofile(audio_path, codec='libmp3lame', bitrate='64k', logger=None)
             
-        jobs_db[job_id]["message"] = "Tahap 4: Groq AI menganalisis transkrip dalam hitungan detik..."
+        jobs_db[job_id]["message"] = "Tahap 4: Analisis transkrip dengan Groq AI..."
         with open(audio_path, "rb") as file:
             transcription = client.audio.transcriptions.create(
                 file=(audio_path, file.read()),
@@ -172,7 +172,7 @@ def process_video_with_groq(video_path: str, job_id: str):
                 response_format="verbose_json",
             )
         
-        jobs_db[job_id]["message"] = "Tahap 5: Menyaring momen viral..."
+        jobs_db[job_id]["message"] = "Tahap 5: Menyaring momen potensial..."
         
         segments = transcription.segments
         scored_segments = []
@@ -190,6 +190,7 @@ def process_video_with_groq(video_path: str, job_id: str):
                 'words': seg.get('words', [])
             })
         
+        # Mengambil 3 segmen teratas berdasarkan kepadatan kata
         top_segments = sorted(scored_segments, key=lambda x: x['score'], reverse=True)[:3]
         
         analysis_text = ""
@@ -210,13 +211,12 @@ def process_video_with_groq(video_path: str, job_id: str):
         if os.path.exists(audio_path):
             os.remove(audio_path)
 
-# --- Modul 3: OpenCV Face Tracking & PURE OPENCV TEXT RENDERING ---
+# --- Modul 3: OpenCV Face Tracking & Text Rendering ---
 def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matches):
     output_clips = []
     job_clip_dir = os.path.join("static", "clips", job_id)
     os.makedirs(job_clip_dir, exist_ok=True)
     
-    # Otomatis unduh cascade jika hilang
     cascade_path = ensure_haar_cascade()
     face_cascade = cv2.CascadeClassifier(cascade_path)
 
@@ -272,6 +272,7 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
                                 active_word = word_info.get('word', '').strip()
                                 break
                     
+                    # Rendering Subtitle
                     if active_word:
                         font = cv2.FONT_HERSHEY_SIMPLEX
                         font_scale = 1.3
@@ -281,9 +282,8 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
                         text_x = (target_w - text_size[0]) // 2
                         text_y = int(h * 0.75) 
                         
-                        # Stroke Hitam
+                        # Stroke Hitam & Teks Kuning
                         cv2.putText(cropped_frame, active_word, (text_x, text_y), font, font_scale, (0, 0, 0), thickness + 4, cv2.LINE_AA)
-                        # Teks Kuning
                         cv2.putText(cropped_frame, active_word, (text_x, text_y), font, font_scale, (0, 255, 255), thickness, cv2.LINE_AA)
                         
                     return cropped_frame
@@ -314,26 +314,29 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
 
     return output_clips
 
-# --- Modul Utama: Orchestrator Pipeline ---
+# --- Modul Utama: Pipeline Background ---
 def background_video_pipeline(job_id: str, video_url: str):
     video_path = os.path.join("temp", f"{job_id}_video.mp4")
     try:
         jobs_db[job_id]["status"] = "processing"
         
+        # 1. Download
         download_youtube_video(job_id, video_url, video_path, max_retries=10)
 
+        # 2. Transkrip & Analisis
         ai_analysis_text, timestamp_matches = process_video_with_groq(video_path, job_id)
         jobs_db[job_id]["analysis"] = ai_analysis_text
 
         jobs_db[job_id]["message"] = "Tahap Akhir: Merender klip dengan Face Tracking & Subtitle AI..."
         
+        # 3. Potong & Render
         generated_clips = []
         if timestamp_matches:
             generated_clips = cut_video_clips_with_tracking(video_path, job_id, timestamp_matches)
         
         jobs_db[job_id]["clips"] = generated_clips
         jobs_db[job_id]["status"] = "completed"
-        jobs_db[job_id]["message"] = "Semua proses selesai dengan sempurna!"
+        jobs_db[job_id]["message"] = "Proses rendering selesai."
         
     except Exception as e:
         jobs_db[job_id]["status"] = "failed"
@@ -343,20 +346,22 @@ def background_video_pipeline(job_id: str, video_url: str):
             os.remove(video_path)
         gc.collect()
 
+# --- Endpoints API ---
 @app.post("/api/v1/generate-clip-url")
 def generate_clip_url(payload: ClipRequest, bg_tasks: BackgroundTasks):
     video_url = payload.url
     if not video_url:
-        raise HTTPException(status_code=400, detail="URL kosong.")
+        raise HTTPException(status_code=400, detail="URL tidak boleh kosong.")
     
     job_id = uuid.uuid4().hex[:8]
     jobs_db[job_id] = {
         "status": "queued", 
-        "message": "Memulai proses antrean AI...", 
+        "message": "Memulai proses antrean...", 
         "clips": [], 
         "analysis": None
     }
     
+    # Jalankan pipeline di background agar tidak memblokir respon
     bg_tasks.add_task(background_video_pipeline, job_id, video_url)
     return {"status": "success", "job_id": job_id}
 
