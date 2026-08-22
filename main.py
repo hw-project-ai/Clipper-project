@@ -207,10 +207,10 @@ def process_video_with_groq(video_path: str, job_id: str):
         if os.path.exists(audio_path):
             os.remove(audio_path)
 
-# --- Modul 3: OpenCV Face Tracking & MoviePy Rendering ---
+# --- Modul 3: OpenCV Face Tracking & PURE OPENCV TEXT RENDERING ---
 
 def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matches):
-    """Memotong video dengan Smart Auto-Framing 9:16 OpenCV dan penanganan Cascade aman."""
+    """Memotong video 9:16 dengan Face Tracking dan OpenCV Karaoke Text (Tanpa ImageMagick)."""
     output_clips = []
     job_clip_dir = os.path.join("static", "clips", job_id)
     os.makedirs(job_clip_dir, exist_ok=True)
@@ -242,6 +242,7 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
                     nonlocal last_x_center
                     frame = get_frame(t)
                     
+                    # 1. Logika Pelacakan Wajah
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
                     
@@ -262,7 +263,39 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
                         x2 = w
                         x1 = w - target_w
                         
-                    return frame[:, x1:x2]
+                    # Salin *frame* agar bisa digambari teks oleh OpenCV
+                    cropped_frame = frame[:, x1:x2].copy()
+                    
+                    # 2. Logika Pembuatan Subtitle Murni OpenCV (Mencegah Error ImageMagick)
+                    absolute_time = start_sec + t
+                    active_word = ""
+                    
+                    if 'words' in clip_data:
+                        for word_info in clip_data['words']:
+                            w_start = word_info.get('start', 0)
+                            w_end = word_info.get('end', 0)
+                            # Jika waktu saat ini berada di antara durasi kata, ambil kata tersebut
+                            if w_start <= absolute_time <= w_end:
+                                active_word = word_info.get('word', '').strip()
+                                break
+                    
+                    if active_word:
+                        font = cv2.FONT_HERSHEY_SIMPLEX
+                        font_scale = 1.3
+                        thickness = 3
+                        
+                        # Menghitung ukuran teks agar bisa diletakkan tepat di tengah (Center)
+                        text_size = cv2.getTextSize(active_word, font, font_scale, thickness)[0]
+                        text_x = (target_w - text_size[0]) // 2
+                        text_y = int(h * 0.75) # Posisi teks di 75% ketinggian layar bawah
+                        
+                        # Lapisan 1: Garis Tepi (Stroke) Tebal Berwarna Hitam
+                        cv2.putText(cropped_frame, active_word, (text_x, text_y), font, font_scale, (0, 0, 0), thickness + 4, cv2.LINE_AA)
+                        
+                        # Lapisan 2: Warna Utama Teks (Kuning Solid - BGR format)
+                        cv2.putText(cropped_frame, active_word, (text_x, text_y), font, font_scale, (0, 255, 255), thickness, cv2.LINE_AA)
+                        
+                    return cropped_frame
 
                 tracked_clip = subclip.fl(track_and_crop)
                 
@@ -302,7 +335,7 @@ def background_video_pipeline(job_id: str, video_url: str):
         ai_analysis_text, timestamp_matches = process_video_with_groq(video_path, job_id)
         jobs_db[job_id]["analysis"] = ai_analysis_text
 
-        jobs_db[job_id]["message"] = "Tahap Akhir: Merender klip dengan Face Tracking..."
+        jobs_db[job_id]["message"] = "Tahap Akhir: Merender klip dengan Face Tracking & Subtitle AI..."
         
         generated_clips = []
         if timestamp_matches:
