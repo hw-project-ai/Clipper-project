@@ -6,6 +6,7 @@ import uvicorn
 import gc
 import cv2
 import numpy as np
+import urllib.request
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -38,8 +39,17 @@ class ClipRequest(BaseModel):
     aspect_ratio: str = "9:16"
     max_duration: int = 60
 
-# --- Modul 1: Ingestion & Bypass Keamanan ---
+# --- Modul 0: Auto-Download Haar Cascade ---
+def ensure_haar_cascade():
+    """Memastikan file model pelacak wajah OpenCV tersedia di peladen."""
+    cascade_filename = "haarcascade_frontalface_default.xml"
+    if not os.path.exists(cascade_filename):
+        print("[Sistem] Mendownload Haar Cascade secara manual...")
+        url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
+        urllib.request.urlretrieve(url, cascade_filename)
+    return cascade_filename
 
+# --- Modul 1: Ingestion & Bypass Keamanan ---
 def generate_fresh_cookies(proxy_url: str = None):
     """Menghasilkan session cookies segar untuk bypass keamanan YouTube."""
     cookie_file_path = f"temp/youtube_cookies_{uuid.uuid4().hex[:6]}.txt"
@@ -81,10 +91,9 @@ def generate_fresh_cookies(proxy_url: str = None):
         finally:
             browser.close()
 
-def download_youtube_video(job_id: str, url: str, output_path: str, max_retries: int = 3):
+def download_youtube_video(job_id: str, url: str, output_path: str, max_retries: int = 10):
     """
-    Mengunduh video mentah dengan mekanisme Auto-Retry agresif.
-    Jika terdeteksi blokir bot, sistem akan membangkitkan cookie baru secara otomatis.
+    Mengunduh video mentah dengan mekanisme Auto-Retry super agresif (10x).
     """
     proxy_env = os.getenv("PROXY_LIST") or os.getenv("PROXY_URL")
     proxy_list = [p.strip() for p in proxy_env.split(",")] if proxy_env else []
@@ -131,22 +140,17 @@ def download_youtube_video(job_id: str, url: str, output_path: str, max_retries:
                 
             if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
                 if attempt < max_retries - 1:
-                    jobs_db[job_id]["message"] = "Terdeteksi blokir dari YouTube. Membuang identitas lama dan meretas ulang..."
+                    jobs_db[job_id]["message"] = f"Terdeteksi blokir (Percobaan {attempt + 1}/{max_retries}). Meretas identitas baru..."
                     time.sleep(3)
                     continue
             
             if attempt == max_retries - 1:
-                raise Exception(f"Gagal mengunduh video setelah {max_retries} kali percobaan pembobolan. Error asli: {error_msg}")
+                raise Exception(f"Gagal mengunduh video setelah {max_retries} kali percobaan. Error asli: {error_msg}")
 
     return False
 
 # --- Modul 2: Cloud AI Transcription (Groq) & Scoring ---
-
 def process_video_with_groq(video_path: str, job_id: str):
-    """
-    Ekstraksi audio lokal, lalu mengirimkannya ke Groq API (Cloud LPU) 
-    untuk transkripsi kilat. Mencegah peladen Render mengalami Out of Memory (OOM).
-    """
     groq_api_key = os.getenv("GROQ_API_KEY")
     if not groq_api_key:
         raise Exception("GROQ_API_KEY belum dikonfigurasi di peladen.")
@@ -171,7 +175,6 @@ def process_video_with_groq(video_path: str, job_id: str):
         jobs_db[job_id]["message"] = "Tahap 5: Menyaring momen viral..."
         
         segments = transcription.segments
-        
         scored_segments = []
         for seg in segments:
             duration = seg['end'] - seg['start']
@@ -208,19 +211,13 @@ def process_video_with_groq(video_path: str, job_id: str):
             os.remove(audio_path)
 
 # --- Modul 3: OpenCV Face Tracking & PURE OPENCV TEXT RENDERING ---
-
 def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matches):
-    """Memotong video 9:16 dengan Face Tracking dan OpenCV Karaoke Text (Tanpa ImageMagick)."""
     output_clips = []
     job_clip_dir = os.path.join("static", "clips", job_id)
     os.makedirs(job_clip_dir, exist_ok=True)
     
-    cv2_base_path = os.path.dirname(os.path.abspath(cv2.__file__))
-    cascade_path = os.path.join(cv2_base_path, 'data', 'haarcascade_frontalface_default.xml')
-    
-    if not os.path.exists(cascade_path):
-        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-
+    # Otomatis unduh cascade jika hilang
+    cascade_path = ensure_haar_cascade()
     face_cascade = cv2.CascadeClassifier(cascade_path)
 
     with VideoFileClip(video_path) as video:
@@ -242,7 +239,6 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
                     nonlocal last_x_center
                     frame = get_frame(t)
                     
-                    # 1. Logika Pelacakan Wajah
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
                     
@@ -263,10 +259,8 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
                         x2 = w
                         x1 = w - target_w
                         
-                    # Salin *frame* agar bisa digambari teks oleh OpenCV
                     cropped_frame = frame[:, x1:x2].copy()
                     
-                    # 2. Logika Pembuatan Subtitle Murni OpenCV (Mencegah Error ImageMagick)
                     absolute_time = start_sec + t
                     active_word = ""
                     
@@ -274,7 +268,6 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
                         for word_info in clip_data['words']:
                             w_start = word_info.get('start', 0)
                             w_end = word_info.get('end', 0)
-                            # Jika waktu saat ini berada di antara durasi kata, ambil kata tersebut
                             if w_start <= absolute_time <= w_end:
                                 active_word = word_info.get('word', '').strip()
                                 break
@@ -284,15 +277,13 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
                         font_scale = 1.3
                         thickness = 3
                         
-                        # Menghitung ukuran teks agar bisa diletakkan tepat di tengah (Center)
                         text_size = cv2.getTextSize(active_word, font, font_scale, thickness)[0]
                         text_x = (target_w - text_size[0]) // 2
-                        text_y = int(h * 0.75) # Posisi teks di 75% ketinggian layar bawah
+                        text_y = int(h * 0.75) 
                         
-                        # Lapisan 1: Garis Tepi (Stroke) Tebal Berwarna Hitam
+                        # Stroke Hitam
                         cv2.putText(cropped_frame, active_word, (text_x, text_y), font, font_scale, (0, 0, 0), thickness + 4, cv2.LINE_AA)
-                        
-                        # Lapisan 2: Warna Utama Teks (Kuning Solid - BGR format)
+                        # Teks Kuning
                         cv2.putText(cropped_frame, active_word, (text_x, text_y), font, font_scale, (0, 255, 255), thickness, cv2.LINE_AA)
                         
                     return cropped_frame
@@ -324,13 +315,12 @@ def cut_video_clips_with_tracking(video_path: str, job_id: str, timestamp_matche
     return output_clips
 
 # --- Modul Utama: Orchestrator Pipeline ---
-
 def background_video_pipeline(job_id: str, video_url: str):
     video_path = os.path.join("temp", f"{job_id}_video.mp4")
     try:
         jobs_db[job_id]["status"] = "processing"
         
-        download_youtube_video(job_id, video_url, video_path)
+        download_youtube_video(job_id, video_url, video_path, max_retries=10)
 
         ai_analysis_text, timestamp_matches = process_video_with_groq(video_path, job_id)
         jobs_db[job_id]["analysis"] = ai_analysis_text
