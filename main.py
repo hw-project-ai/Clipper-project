@@ -14,7 +14,7 @@ import yt_dlp
 from playwright.sync_api import sync_playwright
 
 # --- Pustaka AI & Pengolahan Video ---
-import whisper
+from groq import Groq
 from moviepy.video.io.VideoFileClip import VideoFileClip
 
 app = FastAPI(title="Clipper Studio API - Enterprise AI Edition")
@@ -145,50 +145,78 @@ def download_youtube_video(job_id: str, url: str, output_path: str, max_retries:
 
     return False
 
-# --- Modul 2: Local AI Transcription & Scoring ---
+# --- Modul 2: Cloud AI Transcription (Groq) & Scoring ---
 
-def process_video_with_local_ai(video_path: str, job_id: str):
-    """Ekstraksi audio, STT dengan Whisper, dan analisis kepadatan dialog."""
-    jobs_db[job_id]["message"] = "Tahap 3: AI Whisper Mengekstrak Transkrip & Timestamps..."
+def process_video_with_groq(video_path: str, job_id: str):
+    """
+    Ekstraksi audio lokal, lalu mengirimkannya ke Groq API (Cloud LPU) 
+    untuk transkripsi kilat. Mencegah peladen Render mengalami Out of Memory (OOM).
+    """
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if not groq_api_key:
+        raise Exception("GROQ_API_KEY belum dikonfigurasi di peladen.")
     
-    model = whisper.load_model("base")
-    result = model.transcribe(video_path, word_timestamps=True)
+    client = Groq(api_key=groq_api_key)
+    audio_path = os.path.join("temp", f"{job_id}_audio.mp3")
     
-    jobs_db[job_id]["message"] = "Tahap 4: AI Menganalisis Hook & Value..."
-    segments = result.get("segments", [])
-    
-    scored_segments = []
-    for seg in segments:
-        duration = seg['end'] - seg['start']
-        if duration < 5:
-            continue
-        word_count = len(seg['text'].split())
-        density = word_count / duration 
-        scored_segments.append({
-            'start': seg['start'],
-            'end': seg['end'],
-            'text': seg['text'],
-            'score': density,
-            'words': seg.get('words', []) # Simpan data kata demi kata untuk subtitle nanti
-        })
-    
-    # Ambil 3 momen terbaik
-    top_segments = sorted(scored_segments, key=lambda x: x['score'], reverse=True)[:3]
-    
-    analysis_text = ""
-    timestamp_matches = []
-    for idx, ts in enumerate(top_segments):
-        start_fmt = time.strftime('%M:%S', time.gmtime(ts['start']))
-        end_fmt = time.strftime('%M:%S', time.gmtime(ts['end'] + 15)) 
-        analysis_text += f"{start_fmt} - {end_fmt}\n{ts['text']}\n\n"
-        # Kirim data 'words' ke tahap pemotongan untuk overlay subtitle
-        timestamp_matches.append({
-            'start': ts['start'], 
-            'end': ts['start'] + 15,
-            'words': ts['words'] 
-        })
+    try:
+        # 1. Ekstraksi Audio Ringan (Lokal)
+        jobs_db[job_id]["message"] = "Tahap 3: Mengekstrak audio untuk dikirim ke Cloud AI..."
+        with VideoFileClip(video_path) as video:
+            audio = video.audio
+            audio.write_audiofile(audio_path, codec='libmp3lame', bitrate='64k', logger=None)
+            
+        # 2. Transkripsi Kilat via Groq LPU
+        jobs_db[job_id]["message"] = "Tahap 4: Groq AI menganalisis transkrip dalam hitungan detik..."
+        with open(audio_path, "rb") as file:
+            transcription = client.audio.transcriptions.create(
+                file=(audio_path, file.read()),
+                model="whisper-large-v3",
+                response_format="verbose_json", # Meminta word-level timestamps
+            )
         
-    return analysis_text, timestamp_matches
+        # 3. Analisis Hook & Value (Simulasi lokal pada data teks)
+        jobs_db[job_id]["message"] = "Tahap 5: Menyaring momen viral..."
+        
+        # Groq mengembalikan JSON dengan array 'segments' yang berisi timestamps
+        segments = transcription.segments
+        
+        scored_segments = []
+        for seg in segments:
+            duration = seg['end'] - seg['start']
+            if duration < 5:
+                continue
+            word_count = len(seg['text'].split())
+            density = word_count / duration 
+            scored_segments.append({
+                'start': seg['start'],
+                'end': seg['end'],
+                'text': seg['text'],
+                'score': density,
+                'words': seg.get('words', []) # Persiapan untuk subtitle animasi
+            })
+        
+        # Ambil 3 momen terbaik
+        top_segments = sorted(scored_segments, key=lambda x: x['score'], reverse=True)[:3]
+        
+        analysis_text = ""
+        timestamp_matches = []
+        for idx, ts in enumerate(top_segments):
+            start_fmt = time.strftime('%M:%S', time.gmtime(ts['start']))
+            end_fmt = time.strftime('%M:%S', time.gmtime(ts['end'] + 15)) 
+            analysis_text += f"{start_fmt} - {end_fmt}\n{ts['text']}\n\n"
+            timestamp_matches.append({
+                'start': ts['start'], 
+                'end': ts['start'] + 15,
+                'words': ts['words'] 
+            })
+            
+        return analysis_text, timestamp_matches
+
+    finally:
+        # Selalu bersihkan file audio sementara
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
 
 # --- Modul 3: OpenCV Face Tracking & MoviePy Rendering ---
 
@@ -282,11 +310,14 @@ def background_video_pipeline(job_id: str, video_url: str):
     try:
         jobs_db[job_id]["status"] = "processing"
         
+        # 1. Ingestion (Menggunakan fungsi bypass cerdas)
         download_youtube_video(job_id, video_url, video_path)
 
-        ai_analysis_text, timestamp_matches = process_video_with_local_ai(video_path, job_id)
+        # 2. Pemrosesan AI Cloud (Groq)
+        ai_analysis_text, timestamp_matches = process_video_with_groq(video_path, job_id)
         jobs_db[job_id]["analysis"] = ai_analysis_text
 
+        # 3. OpenCV Tracking & Render
         jobs_db[job_id]["message"] = "Tahap Akhir: Merender klip dengan Face Tracking..."
         
         generated_clips = []
