@@ -11,6 +11,6 @@ google-generativeai
 requests
 openai-whisper
 moviepy==1.0.3
-opencv-python-headless
+opencv-contrib-python-headless
 numpy
 groq
