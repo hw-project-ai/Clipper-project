@@ -81,45 +81,69 @@ def generate_fresh_cookies(proxy_url: str = None):
         finally:
             browser.close()
 
-def download_youtube_video(job_id: str, url: str, output_path: str):
-    """Mengunduh video mentah menggunakan yt-dlp dan cookies."""
+def download_youtube_video(job_id: str, url: str, output_path: str, max_retries: int = 3):
+    """
+    Mengunduh video mentah dengan mekanisme Auto-Retry agresif.
+    Jika terdeteksi blokir bot, sistem akan membangkitkan cookie baru secara otomatis.
+    """
     proxy_env = os.getenv("PROXY_LIST") or os.getenv("PROXY_URL")
-    selected_proxy = None
-    
-    if proxy_env:
-        proxy_list = [p.strip() for p in proxy_env.split(",") if p.strip()]
-        selected_proxy = random.choice(proxy_list)
-    
-    jobs_db[job_id]["message"] = "Tahap 1: Membangkitkan session cookies (Bypass)..."
-    cookie_file = generate_fresh_cookies(selected_proxy)
-    
-    ydl_opts = {
-        'format': 'worst[ext=mp4]/worst/bestvideo[height<=360]+bestaudio/best', 
-        'outtmpl': output_path,
-        'merge_output_format': 'mp4',
-        'quiet': True,
-        'no_warnings': True,
-        'retries': 5,
-        'nocheckcertificate': True,
-        'rm_cachedir': True,
-    }
-    
-    if selected_proxy:
-        ydl_opts['proxy'] = selected_proxy
-    
-    jobs_db[job_id]["message"] = "Tahap 2: Mengunduh video mentah..."
+    proxy_list = [p.strip() for p in proxy_env.split(",")] if proxy_env else []
+
+    for attempt in range(max_retries):
+        selected_proxy = random.choice(proxy_list) if proxy_list else None
         
-    if cookie_file and os.path.exists(cookie_file):
-        ydl_opts['cookiefile'] = cookie_file
+        jobs_db[job_id]["message"] = f"Tahap 1: Membangkitkan session cookies (Percobaan Bypass {attempt + 1}/{max_retries})..."
+        cookie_file = generate_fresh_cookies(selected_proxy)
         
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    finally:
-        if cookie_file and os.path.exists(cookie_file):
-            os.remove(cookie_file)
+        ydl_opts = {
+            'format': 'worst[ext=mp4]/worst/bestvideo[height<=360]+bestaudio/best', 
+            'outtmpl': output_path,
+            'merge_output_format': 'mp4',
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
+            'rm_cachedir': True,
+            # Identitas klien Android untuk mengecoh pertahanan YouTube
+            'extractor_args': {'youtube': ['player_client=android', 'player_skip=web']},
+        }
+        
+        if selected_proxy:
+            ydl_opts['proxy'] = selected_proxy
             
-    return True
+        if cookie_file and os.path.exists(cookie_file):
+            ydl_opts['cookiefile'] = cookie_file
+            
+        jobs_db[job_id]["message"] = f"Tahap 2: Mengunduh video mentah (Percobaan {attempt + 1})..."
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            
+            # Jika berhasil, bersihkan file cookie dan keluar dari loop
+            if cookie_file and os.path.exists(cookie_file):
+                os.remove(cookie_file)
+            return True
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[Worker] Percobaan {attempt + 1} gagal: {error_msg}")
+            
+            # Selalu bersihkan cookie yang gagal agar tidak menumpuk di memori
+            if cookie_file and os.path.exists(cookie_file):
+                os.remove(cookie_file)
+                
+            # Logika Deteksi Pemblokiran Bot YouTube
+            if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
+                if attempt < max_retries - 1:
+                    jobs_db[job_id]["message"] = "Terdeteksi blokir dari YouTube. Membuang identitas lama dan meretas ulang..."
+                    time.sleep(3) # Jeda strategis sebelum mencoba membuat sesi baru
+                    continue # Paksa perulangan kembali ke tahap 1
+            
+            # Jika error bukan karena bot, atau sudah mencapai batas maksimal percobaan, serah menyerah
+            if attempt == max_retries - 1:
+                raise Exception(f"Gagal mengunduh video setelah {max_retries} kali percobaan pembobolan. Error asli: {error_msg}")
+
+    return False
 
 # --- Modul 2: Local AI Transcription & Scoring ---
 
